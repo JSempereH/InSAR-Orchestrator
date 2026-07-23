@@ -1,0 +1,3 @@
+# Install after requirements.txt. Only adds what's needed to run backend/tests/.
+pytest>=8.0
+httpx>=0.27

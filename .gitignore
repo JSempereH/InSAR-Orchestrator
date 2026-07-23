@@ -44,6 +44,7 @@ frontend/.vite/
 
 # IDE
 .vscode/
+!.vscode/settings.json # For testing using vs code
 .idea/
 *.swp
 *.swo
