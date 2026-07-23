@@ -6,4 +6,5 @@ pydantic-settings>=2.14.2
 python-multipart>=0.0.32
 websockets>=13.0
 cryptography>=43.0
+psutil>=6.0
 insar-core @ ../packages/insar_core
