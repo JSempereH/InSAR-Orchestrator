@@ -106,9 +106,24 @@ def _run() -> None:
             _done_in_session += 1
 
 
+def _resolve_destination(db, job_id: str) -> Optional[Path]:
+    """Per-project storage destination, falling back to the app default."""
+    from app.config import settings
+    from app.models import Batch, Job, Project
+
+    storage_path = (
+        db.query(Project.storage_path)
+        .join(Batch, Batch.project_id == Project.id)
+        .join(Job, Job.batch_id == Batch.id)
+        .filter(Job.id == job_id)
+        .scalar()
+    )
+    destination = Path(storage_path) if storage_path else Path(settings.downloads_dir)
+    return destination if destination.exists() else None
+
+
 def _download_one(job_id: str, hyp3_job_id: str) -> None:
     # Import here to avoid circular imports at module load time
-    from app.config import settings
     from app.database import SessionLocal
     from app.models import Job
     from app.services.hyp3_service import get_hyp3_adapter
@@ -116,8 +131,14 @@ def _download_one(job_id: str, hyp3_job_id: str) -> None:
     db = SessionLocal()
     try:
         adapter = get_hyp3_adapter(db)
+        destination = _resolve_destination(db, job_id)
     finally:
         db.close()
+
+    if destination is None:
+        download_state.update(job_id, status="error", error="Storage destination not available")
+        logger.error("Queue: storage destination missing for job %s", job_id)
+        return
 
     def on_progress(**kw):
         tb = kw.get("total_bytes", 0)
@@ -125,7 +146,7 @@ def _download_one(job_id: str, hyp3_job_id: str) -> None:
         pct = round(dl / tb * 100, 1) if tb else 0
         download_state.update(job_id, status="running", pct=pct, **kw)
 
-    files = adapter.download(hyp3_job_id, Path(settings.downloads_dir), progress_cb=on_progress)
+    files = adapter.download(hyp3_job_id, destination, progress_cb=on_progress)
 
     db2 = SessionLocal()
     try:

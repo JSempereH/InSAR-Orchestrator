@@ -64,6 +64,10 @@ class Project(Base):
     date_end = Column(String, nullable=True)
     max_temporal_neighbors = Column(Integer, default=3)
 
+    # Resolved absolute directory for this project's downloads.
+    # NULL means "use the app-wide default (settings.downloads_dir)".
+    storage_path = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     batches = relationship("Batch", back_populates="project", cascade="all, delete-orphan")

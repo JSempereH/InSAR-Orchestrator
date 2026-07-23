@@ -2,6 +2,9 @@
 CRUD endpoints for Project (area of interest).
 """
 
+import re
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -11,9 +14,31 @@ from app import models, schemas
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "project"
+
+
+def _resolve_storage_path(mountpoint: str, project_name: str) -> str:
+    resolved = Path(mountpoint) / "insar-orchestrator" / _slugify(project_name)
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Storage destination '{mountpoint}' is not available: {exc}",
+        )
+    return str(resolved)
+
+
 @router.post("", response_model=schemas.ProjectOut)
 def create_project(payload: schemas.ProjectCreate, db: Session = Depends(get_db)):
-    project = models.Project(**payload.model_dump())
+    data = payload.model_dump()
+    mountpoint = data.pop("storage_mountpoint", None)
+    if mountpoint:
+        data["storage_path"] = _resolve_storage_path(mountpoint, payload.name)
+
+    project = models.Project(**data)
     db.add(project)
     db.commit()
     db.refresh(project)

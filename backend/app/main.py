@@ -13,16 +13,30 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
+from sqlalchemy import text
+
 from app.config import settings
 from app.database import Base, engine, SessionLocal
 from app.models import Batch, Job, JobStatus
-from app.routers import batches, credentials, jobs, projects, scenes
+from app.routers import batches, credentials, jobs, projects, scenes, storage
 from app.services.polling_service import poll_active_jobs, force_poll
 from app.services import download_queue
 
 logging.basicConfig(level=logging.INFO)
 
+
+def _migrate_schema() -> None:
+    """Add columns introduced after the initial create_all, since there's no
+    Alembic in this project and create_all only creates missing tables."""
+    with engine.connect() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(projects)"))}
+        if "storage_path" not in cols:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN storage_path VARCHAR"))
+            conn.commit()
+
+
 Base.metadata.create_all(bind=engine)
+_migrate_schema()
 
 app = FastAPI(title="InSAR Orchestrator API", version="0.2.0")
 
@@ -39,6 +53,7 @@ app.include_router(batches.router)
 app.include_router(scenes.router)
 app.include_router(credentials.router)
 app.include_router(jobs.router)
+app.include_router(storage.router)
 
 
 @app.on_event("startup")

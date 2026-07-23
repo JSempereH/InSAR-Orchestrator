@@ -22,6 +22,9 @@ class ProjectCreate(BaseModel):
     date_start: Optional[str] = None
     date_end: Optional[str] = None
     max_temporal_neighbors: int = 3
+    storage_mountpoint: Optional[str] = Field(
+        None, description="Mount point of the disk to store this project's downloads on. Omit for the app default."
+    )
 
 
 class ProjectOut(BaseModel):
@@ -34,6 +37,7 @@ class ProjectOut(BaseModel):
     date_start: Optional[str]
     date_end: Optional[str]
     max_temporal_neighbors: int
+    storage_path: Optional[str]
     created_at: datetime
 
     class Config:
@@ -142,3 +146,14 @@ class BatchPlanOut(BaseModel):
     total_pairs: int
     scene_count: int
     pairs_preview: list[list[str]]  # [[ref, sec], ...]
+
+
+# ---------- Storage ----------
+
+class StorageTargetOut(BaseModel):
+    mountpoint: Optional[str]  # None = app default
+    device: str
+    fstype: str
+    total_gb: float
+    free_gb: float
+    writable: bool
