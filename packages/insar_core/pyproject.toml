@@ -1,0 +1,17 @@
+[project]
+name = "insar-core"
+version = "0.1.0"
+description = "Core InSAR processing library: scene search, pair building, HyP3 orchestration, MintPy integration"
+requires-python = ">=3.11"
+dependencies = [
+    "asf-search>=12.2.2",
+    "hyp3-sdk>=7.7.7",
+    "shapely>=2.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
