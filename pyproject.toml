@@ -1,0 +1,13 @@
+[project]
+name = "insar-orchestrator"
+version = "0.1.0"
+description = "End-to-end InSAR processing orchestrator: scene discovery, cloud processing, SBAS analysis"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/insar_core"]
+
+[tool.uv.sources]
+insar-core = { workspace = true }
