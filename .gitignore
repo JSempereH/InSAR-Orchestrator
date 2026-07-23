@@ -42,9 +42,6 @@ frontend/dist/
 frontend/.vite/
 .pnpm-store/
 
-# IDE
-.vscode/
-!.vscode/settings.json # For testing using vs code
 .idea/
 *.swp
 *.swo
