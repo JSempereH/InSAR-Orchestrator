@@ -1,0 +1,56 @@
+# Credentials — never commit these
+.netrc
+.env
+.env.local
+.env.*.local
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Data files (large, generated or project-specific)
+hyp3_downloads_murcia/
+mintpy_murcia/
+*.zip
+backend/downloads/
+hyp3_jobs_murcia.json
+sentinel1_murcia_scenes.csv
+hyp3_openapi.json
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+.pnpm-store/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
