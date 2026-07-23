@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { projectsApi, Project, TrackSummary } from "../api/client";
+import { projectsApi, storageApi, Project, TrackSummary } from "../api/client";
 import { AOIMap } from "../components/Map/AOIMap";
 import { TrackPicker } from "../components/SceneSearch/TrackPicker";
 
@@ -73,6 +73,7 @@ function ProjectCard({ project: p, onDelete }: { project: Project; onDelete: () 
           <Chip label={p.flight_direction ?? "—"} />
           <Chip label={`${p.date_start} → ${p.date_end}`} />
           <Chip label={`${p.max_temporal_neighbors} neighbors`} />
+          <Chip label={p.storage_path ? `💾 ${p.storage_path}` : "💾 Default storage"} />
         </div>
       </div>
       <div style={{ fontSize: 11, color: "var(--text-faint)", whiteSpace: "nowrap" }}>
@@ -111,6 +112,9 @@ function NewProject({ onDone }: { onDone: () => void }) {
   const [dateEnd, setDateEnd]       = useState(new Date().toISOString().slice(0, 10));
   const [track, setTrack]           = useState<TrackSummary | null>(null);
   const [maxNeighbors, setMaxNeighbors] = useState(3);
+  const [storageMountpoint, setStorageMountpoint] = useState<string>("");
+
+  const { data: storageTargets } = useQuery({ queryKey: ["storage-targets"], queryFn: storageApi.targets });
 
   const createMut = useMutation({
     mutationFn: projectsApi.create,
@@ -256,6 +260,25 @@ function NewProject({ onDone }: { onDone: () => void }) {
               </span>
             </div>
 
+            <div className="field" style={{ maxWidth: 340, marginTop: 16 }}>
+              <label>Storage destination</label>
+              <select
+                className="input"
+                value={storageMountpoint}
+                onChange={(e) => setStorageMountpoint(e.target.value)}
+              >
+                {storageTargets?.map((t) => (
+                  <option key={t.mountpoint ?? "default"} value={t.mountpoint ?? ""} disabled={!t.writable}>
+                    {t.mountpoint ? `${t.mountpoint} (${t.device})` : "App default"}
+                    {" — "}{t.free_gb} GB free of {t.total_gb} GB{!t.writable ? " — not writable" : ""}
+                  </option>
+                ))}
+              </select>
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                All downloads for this project will be saved here. Cannot be changed later.
+              </span>
+            </div>
+
             {track.scene_count > 1 && (
               <div style={{
                 marginTop: 16,
@@ -287,6 +310,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
                   date_start: dateStart,
                   date_end: dateEnd,
                   max_temporal_neighbors: maxNeighbors,
+                  storage_mountpoint: storageMountpoint || undefined,
                 })
               }
             >

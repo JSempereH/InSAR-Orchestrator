@@ -17,6 +17,7 @@ export interface Project {
   date_start?: string;
   date_end?: string;
   max_temporal_neighbors: number;
+  storage_path?: string;
   created_at: string;
 }
 
@@ -29,6 +30,16 @@ export interface ProjectCreate {
   date_start?: string;
   date_end?: string;
   max_temporal_neighbors?: number;
+  storage_mountpoint?: string;
+}
+
+export interface StorageTarget {
+  mountpoint: string | null; // null = app default
+  device: string;
+  fstype: string;
+  total_gb: number;
+  free_gb: number;
+  writable: boolean;
 }
 
 export interface Batch {
@@ -168,6 +179,10 @@ export const downloadQueueApi = {
     api.post<QueueState>("/api/downloads/queue", { jobs }).then((r) => r.data),
   get: () => api.get<QueueState>("/api/downloads/queue").then((r) => r.data),
   cancel: () => api.delete("/api/downloads/queue").then((r) => r.data),
+};
+
+export const storageApi = {
+  targets: () => api.get<StorageTarget[]>("/api/storage/targets").then((r) => r.data),
 };
 
 export const credentialsApi = {
