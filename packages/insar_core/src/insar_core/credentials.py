@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import netrc
 import os
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 EARTHDATA_HOST = "urs.earthdata.nasa.gov"
+EGMS_KEY_FILE_ENV = "EGMS_SERVICE_KEY_FILE"
 
 
 @dataclass(frozen=True)
@@ -49,3 +51,22 @@ def load_earthdata_credentials(
         "Set EARTHDATA_USER and EARTHDATA_PASS environment variables, "
         "or add an entry for urs.earthdata.nasa.gov in ~/.netrc."
     )
+
+
+def load_egms_service_key(path: Optional[str] = None) -> dict:
+    """Return the parsed CLMS API service-account key JSON.
+
+    Resolution order:
+    1. Explicit `path` argument
+    2. EGMS_SERVICE_KEY_FILE environment variable
+
+    Generate the key from your CLMS account page (land.copernicus.eu) and
+    save it as a JSON file with client_id, user_id, token_uri, private_key.
+    """
+    key_path = path or os.environ.get(EGMS_KEY_FILE_ENV)
+    if not key_path:
+        raise EnvironmentError(
+            "EGMS service-account key not found. Set EGMS_SERVICE_KEY_FILE to the path "
+            "of the JSON key downloaded from your CLMS account, or pass `path` explicitly."
+        )
+    return json.loads(Path(key_path).read_text())
