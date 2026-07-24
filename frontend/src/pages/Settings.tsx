@@ -19,6 +19,26 @@ export function SettingsPage() {
     }
   };
 
+  const [egmsKeyJson, setEgmsKeyJson] = useState("");
+  const [egmsState, setEgmsState] = useState<SaveState>("idle");
+  const [egmsError, setEgmsError] = useState<string | null>(null);
+
+  const handleSaveEgms = async () => {
+    setEgmsState("saving");
+    setEgmsError(null);
+    try {
+      const parsed = JSON.parse(egmsKeyJson);
+      if (!parsed.client_id || !parsed.user_id || !parsed.token_uri || !parsed.private_key) {
+        throw new Error("Key is missing client_id, user_id, token_uri, or private_key.");
+      }
+      await credentialsApi.upsert("egms", parsed.client_id, egmsKeyJson);
+      setEgmsState("saved");
+    } catch (err) {
+      setEgmsError(err instanceof Error ? err.message : "Invalid JSON key");
+      setEgmsState("error");
+    }
+  };
+
   return (
     <div className="page" style={{ maxWidth: 620 }}>
       <h2 style={{ marginBottom: 4 }}>Settings</h2>
@@ -86,6 +106,60 @@ export function SettingsPage() {
             )}
             {state === "error" && (
               <span style={{ color: "var(--danger)", fontSize: 13 }}>Failed to save</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* EGMS / CLMS credentials */}
+      <div className="card" style={{ padding: 24, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 14, marginBottom: 20 }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+            background: "#dcfce7",
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20,
+          }}>
+            ⛰
+          </div>
+          <div>
+            <h3 style={{ marginBottom: 4 }}>Copernicus EGMS</h3>
+            <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted)" }}>
+              Required to search and download European Ground Motion Service products. Paste the
+              full JSON service-account key generated from your{" "}
+              <a href="https://land.copernicus.eu" target="_blank" rel="noreferrer" style={{ color: "var(--primary)" }}>
+                CLMS account
+              </a>{" "}
+              page. Stored encrypted, same as your Earthdata credentials.
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div className="field">
+            <label>Service-account key (JSON)</label>
+            <textarea
+              className="input"
+              rows={5}
+              style={{ fontFamily: "monospace", fontSize: 12 }}
+              value={egmsKeyJson}
+              onChange={(e) => { setEgmsKeyJson(e.target.value); setEgmsState("idle"); setEgmsError(null); }}
+              placeholder='{"client_id": "...", "user_id": "...", "token_uri": "...", "private_key": "..."}'
+            />
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button
+              className="btn btn-primary"
+              onClick={handleSaveEgms}
+              disabled={!egmsKeyJson || egmsState === "saving"}
+            >
+              {egmsState === "saving" ? "Saving…" : "Save EGMS key"}
+            </button>
+            {egmsState === "saved" && (
+              <span style={{ color: "var(--success)", fontSize: 13, fontWeight: 500 }}>✓ Saved</span>
+            )}
+            {egmsState === "error" && (
+              <span style={{ color: "var(--danger)", fontSize: 13 }}>{egmsError ?? "Failed to save"}</span>
             )}
           </div>
         </div>
