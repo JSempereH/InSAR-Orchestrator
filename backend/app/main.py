@@ -18,7 +18,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import Base, engine, SessionLocal
 from app.models import Batch, Job, JobStatus
-from app.routers import batches, credentials, jobs, projects, scenes, storage
+from app.routers import batches, credentials, egms, jobs, projects, scenes, storage
 from app.services.polling_service import poll_active_jobs, force_poll
 from app.services import download_queue
 
@@ -54,6 +54,7 @@ app.include_router(scenes.router)
 app.include_router(credentials.router)
 app.include_router(jobs.router)
 app.include_router(storage.router)
+app.include_router(egms.router)
 
 
 @app.on_event("startup")
