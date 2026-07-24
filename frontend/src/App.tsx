@@ -2,17 +2,19 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import { DashboardPage } from "./pages/Dashboard";
 import { ProjectsPage } from "./pages/Projects";
+import { GroundMotionPage } from "./pages/GroundMotion";
 import { SettingsPage } from "./pages/Settings";
 import "./App.css";
 
 const queryClient = new QueryClient();
 
-type Page = "dashboard" | "projects" | "settings";
+type Page = "dashboard" | "projects" | "ground-motion" | "settings";
 
 const NAV: { id: Page; icon: string; label: string }[] = [
-  { id: "dashboard", icon: "◈", label: "Dashboard" },
-  { id: "projects",  icon: "⊞", label: "Projects" },
-  { id: "settings",  icon: "⚙", label: "Settings" },
+  { id: "dashboard",      icon: "◈", label: "Dashboard" },
+  { id: "projects",       icon: "⊞", label: "Projects" },
+  { id: "ground-motion",  icon: "⛰", label: "Ground Motion" },
+  { id: "settings",       icon: "⚙", label: "Settings" },
 ];
 
 function App() {
@@ -97,16 +99,17 @@ function App() {
           {/* Footer */}
           <div style={{ padding: "12px 16px", borderTop: "1px solid var(--sidebar-border)" }}>
             <div style={{ fontSize: 11, color: "#334155" }}>
-              Sentinel-1 · ASF · HyP3 · MintPy
+              Sentinel-1 · ASF · HyP3 · EGMS · MintPy
             </div>
           </div>
         </nav>
 
         {/* ── Main ──────────────────────────────────────── */}
         <main style={{ flex: 1, overflowY: "auto", background: "var(--bg)" }}>
-          {page === "dashboard" && <DashboardPage />}
-          {page === "projects"  && <ProjectsPage />}
-          {page === "settings"  && <SettingsPage />}
+          {page === "dashboard"      && <DashboardPage />}
+          {page === "projects"       && <ProjectsPage />}
+          {page === "ground-motion"  && <GroundMotionPage onGoToSettings={() => setPage("settings")} />}
+          {page === "settings"       && <SettingsPage />}
         </main>
       </div>
     </QueryClientProvider>
