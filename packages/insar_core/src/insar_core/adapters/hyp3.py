@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional
 
-import requests
 import hyp3_sdk
 
 from insar_core.adapters.base import ProcessorAdapter
 from insar_core.models.job import JobStatus, SubmittedJob
+from insar_core.net import stream_download
 
 
 def _sdk_job_to_submitted(job) -> SubmittedJob:
@@ -99,7 +98,7 @@ class HyP3Adapter(ProcessorAdapter):
             url = file_info["url"]
             filename = file_info.get("filename") or url.split("/")[-1].split("?")[0]
             dest = destination / filename
-            _stream_file(url, dest, idx + 1, len(files), progress_cb)
+            stream_download(url, dest, file_index=idx + 1, file_count=len(files), progress_cb=progress_cb)
             paths.append(dest)
         return paths
 
@@ -121,38 +120,3 @@ class HyP3Adapter(ProcessorAdapter):
 
     def check_credits(self) -> float:
         return self._client.check_credits()
-
-
-def _stream_file(
-    url: str,
-    dest: Path,
-    file_index: int,
-    file_count: int,
-    progress_cb: Callable[..., None] | None,
-) -> None:
-    """Download a single file with chunked streaming and optional progress reporting."""
-    CHUNK = 1024 * 1024  # 1 MB
-    with requests.get(url, stream=True, timeout=600) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        downloaded = 0
-        t0 = time.monotonic()
-
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=CHUNK):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_cb:
-                        elapsed = max(time.monotonic() - t0, 0.001)
-                        speed = downloaded / elapsed
-                        eta = int((total - downloaded) / speed) if speed and total else None
-                        progress_cb(
-                            file_index=file_index,
-                            file_count=file_count,
-                            filename=dest.name,
-                            total_bytes=total,
-                            downloaded_bytes=downloaded,
-                            speed_bps=speed,
-                            eta_s=eta,
-                        )
