@@ -117,6 +117,35 @@ export interface QueueState {
   cancelled: boolean;
 }
 
+// ── EGMS (Copernicus ground motion) ───────────────────────────────────────
+
+export interface EGMSProduct {
+  query_id: string;
+  filename: string;
+  level: string;
+  size_mb?: number;
+}
+
+export interface EGMSSearchRequest {
+  geometry: GeoJSON.Geometry;
+  level: string;              // "L2A" | "L2B" | "L3"
+  release: string;            // e.g. "2019-2023"
+  direction?: string;         // required for L2A/L2B
+  product_type?: string;      // required for L3
+  tile_id?: string;
+}
+
+export interface EGMSQueueState {
+  active: boolean;
+  current_filename: string | null;
+  current_progress: DownloadProgress | null;
+  pending_count: number;
+  destination: string | null;
+  total: number;
+  done: number;
+  cancelled: boolean;
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const projectsApi = {
@@ -183,6 +212,16 @@ export const downloadQueueApi = {
 
 export const storageApi = {
   targets: () => api.get<StorageTarget[]>("/api/storage/targets").then((r) => r.data),
+};
+
+export const egmsApi = {
+  options: (kind: string) => api.get<string[]>(`/api/egms/options/${kind}`).then((r) => r.data),
+  search: (body: EGMSSearchRequest) =>
+    api.post<EGMSProduct[]>("/api/egms/search", body).then((r) => r.data),
+  startDownload: (body: { products: EGMSProduct[]; destination_name: string; storage_mountpoint?: string }) =>
+    api.post<EGMSQueueState>("/api/egms/downloads/queue", body).then((r) => r.data),
+  getQueue: () => api.get<EGMSQueueState>("/api/egms/downloads/queue").then((r) => r.data),
+  cancelQueue: () => api.delete("/api/egms/downloads/queue").then((r) => r.data),
 };
 
 export const credentialsApi = {
