@@ -148,6 +148,31 @@ class BatchPlanOut(BaseModel):
     pairs_preview: list[list[str]]  # [[ref, sec], ...]
 
 
+# ---------- EGMS (Copernicus ground motion) ----------
+
+class EGMSSearchRequest(BaseModel):
+    """Search for EGMS ground-motion products covering an AOI."""
+    geometry: dict[str, Any]
+    level: str = Field(..., description="'L2A', 'L2B', or 'L3'")
+    release: str = Field(..., description="Processing vintage, e.g. '2019-2023'")
+    direction: Optional[str] = Field(None, description="'ascending'/'descending' - required for L2A/L2B")
+    product_type: Optional[str] = Field(None, description="e.g. 'ORTHO-UP' - required for L3")
+    tile_id: Optional[str] = None
+
+
+class EGMSProductOut(BaseModel):
+    query_id: str
+    filename: str
+    level: str
+    size_mb: Optional[float]
+
+
+class EGMSDownloadRequest(BaseModel):
+    products: list[EGMSProductOut]
+    destination_name: str = Field(..., description="Subfolder name for these downloads")
+    storage_mountpoint: Optional[str] = Field(None, description="Omit for the app default")
+
+
 # ---------- Storage ----------
 
 class StorageTargetOut(BaseModel):
