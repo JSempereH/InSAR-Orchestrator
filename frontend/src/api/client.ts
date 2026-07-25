@@ -146,6 +146,26 @@ export interface EGMSQueueState {
   cancelled: boolean;
 }
 
+export interface EGMSDownloadRecord {
+  id: string;
+  name: string;
+  geometry: GeoJSON.Geometry;
+  level: string;
+  release: string;
+  direction?: string;
+  product_type?: string;
+  tile_id?: string;
+  destination_path: string;
+  filenames: string[];
+  created_at: string;
+}
+
+export interface ProjectDownloadSummary {
+  storage_path: string | null;
+  total_jobs: number;
+  downloaded_jobs: number;
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const projectsApi = {
@@ -157,6 +177,8 @@ export const projectsApi = {
   delete: (id: string) => api.delete(`/api/projects/${id}`),
   batches: (id: string) =>
     api.get<Batch[]>(`/api/projects/${id}/batches`).then((r) => r.data),
+  downloadSummary: (id: string) =>
+    api.get<ProjectDownloadSummary>(`/api/projects/${id}/download-summary`).then((r) => r.data),
 };
 
 export const scenesApi = {
@@ -218,10 +240,14 @@ export const egmsApi = {
   options: (kind: string) => api.get<string[]>(`/api/egms/options/${kind}`).then((r) => r.data),
   search: (body: EGMSSearchRequest) =>
     api.post<EGMSProduct[]>("/api/egms/search", body).then((r) => r.data),
-  startDownload: (body: { products: EGMSProduct[]; destination_name: string; storage_mountpoint?: string }) =>
-    api.post<EGMSQueueState>("/api/egms/downloads/queue", body).then((r) => r.data),
+  startDownload: (
+    body: EGMSSearchRequest & { products: EGMSProduct[]; destination_name: string; storage_mountpoint?: string }
+  ) => api.post<EGMSQueueState>("/api/egms/downloads/queue", body).then((r) => r.data),
   getQueue: () => api.get<EGMSQueueState>("/api/egms/downloads/queue").then((r) => r.data),
   cancelQueue: () => api.delete("/api/egms/downloads/queue").then((r) => r.data),
+  listDownloads: () => api.get<EGMSDownloadRecord[]>("/api/egms/downloads").then((r) => r.data),
+  deleteDownload: (id: string) => api.delete(`/api/egms/downloads/${id}`).then((r) => r.data),
+  getPoints: (id: string) => api.get<GeoJSON.FeatureCollection>(`/api/egms/downloads/${id}/points`).then((r) => r.data),
 };
 
 export const credentialsApi = {
