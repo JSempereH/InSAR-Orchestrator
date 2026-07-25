@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState } from "react";
 import { DashboardPage } from "./pages/Dashboard";
-import { ProjectsPage } from "./pages/Projects";
 import { GroundMotionPage } from "./pages/GroundMotion";
 import { DownloadsPage } from "./pages/Downloads";
 import { SettingsPage } from "./pages/Settings";
@@ -9,24 +8,13 @@ import "./App.css";
 
 const queryClient = new QueryClient();
 
-type Page = "dashboard" | "projects" | "ground-motion" | "downloads" | "settings";
+type Page = "dashboard" | "ground-motion" | "downloads" | "settings";
 
-const NAV_GROUPS: { label: string | null; items: { id: Page; icon: string; label: string }[] }[] = [
-  {
-    label: "ASF",
-    items: [
-      { id: "dashboard", icon: "◈", label: "Dashboard" },
-      { id: "projects",  icon: "⊞", label: "Projects" },
-    ],
-  },
-  {
-    label: null,
-    items: [
-      { id: "ground-motion", icon: "⛰", label: "EGMS" },
-      { id: "downloads",     icon: "⬇", label: "Downloads" },
-      { id: "settings",      icon: "⚙", label: "Settings" },
-    ],
-  },
+const NAV: { id: Page; icon: string; label: string }[] = [
+  { id: "dashboard",     icon: "🛰", label: "ASF" },
+  { id: "ground-motion", icon: "⛰", label: "EGMS" },
+  { id: "downloads",     icon: "⬇", label: "Downloads" },
+  { id: "settings",      icon: "⚙", label: "Settings" },
 ];
 
 function App() {
@@ -71,58 +59,41 @@ function App() {
 
           {/* Nav items */}
           <div style={{ flex: 1, padding: "8px 8px 0" }}>
-            {NAV_GROUPS.map((group, gi) => (
-              <div key={group.label ?? gi} style={{ marginBottom: gi < NAV_GROUPS.length - 1 ? 14 : 0 }}>
-                {group.label && (
-                  <div style={{
-                    padding: "4px 12px 6px",
-                    fontSize: 10,
-                    fontWeight: 700,
-                    letterSpacing: "0.06em",
-                    color: "#475569",
-                    textTransform: "uppercase",
-                  }}>
-                    {group.label}
-                  </div>
-                )}
-                {group.items.map(({ id, icon, label }) => {
-                  const active = page === id;
-                  return (
-                    <button
-                      key={id}
-                      onClick={() => setPage(id)}
-                      style={{
-                        width: "100%",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                        padding: "9px 12px",
-                        paddingLeft: group.label ? 20 : 12,
-                        marginBottom: 2,
-                        background: active ? "var(--sidebar-active)" : "transparent",
-                        border: "none",
-                        borderRadius: 6,
-                        color: active ? "#60a5fa" : "var(--sidebar-text)",
-                        fontSize: 13,
-                        fontWeight: active ? 600 : 400,
-                        fontFamily: "var(--font)",
-                        cursor: "pointer",
-                        textAlign: "left",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!active) (e.currentTarget as HTMLElement).style.background = "var(--sidebar-hover)";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!active) (e.currentTarget as HTMLElement).style.background = "transparent";
-                      }}
-                    >
-                      <span style={{ fontSize: 15, opacity: 0.85 }}>{icon}</span>
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
+            {NAV.map(({ id, icon, label }) => {
+              const active = page === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => setPage(id)}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "9px 12px",
+                    marginBottom: 2,
+                    background: active ? "var(--sidebar-active)" : "transparent",
+                    border: "none",
+                    borderRadius: 6,
+                    color: active ? "#60a5fa" : "var(--sidebar-text)",
+                    fontSize: 13,
+                    fontWeight: active ? 600 : 400,
+                    fontFamily: "var(--font)",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!active) (e.currentTarget as HTMLElement).style.background = "var(--sidebar-hover)";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!active) (e.currentTarget as HTMLElement).style.background = "transparent";
+                  }}
+                >
+                  <span style={{ fontSize: 15, opacity: 0.85 }}>{icon}</span>
+                  {label}
+                </button>
+              );
+            })}
           </div>
 
           {/* Footer */}
@@ -136,7 +107,6 @@ function App() {
         {/* ── Main ──────────────────────────────────────── */}
         <main style={{ flex: 1, overflowY: "auto", background: "var(--bg)" }}>
           {page === "dashboard"      && <DashboardPage />}
-          {page === "projects"       && <ProjectsPage />}
           {page === "ground-motion"  && <GroundMotionPage onGoToSettings={() => setPage("settings")} />}
           {page === "downloads"      && <DownloadsPage />}
           {page === "settings"       && <SettingsPage />}

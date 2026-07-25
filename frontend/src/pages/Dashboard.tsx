@@ -5,12 +5,22 @@ import {
   Batch, Project, QueueState,
 } from "../api/client";
 import { JobTable } from "../components/JobMonitor/JobTable";
+import { NewProjectWizard } from "../components/ProjectWizard/NewProjectWizard";
 
 export function DashboardPage() {
   const qc = useQueryClient();
   const { data: projects } = useQuery({ queryKey: ["projects"], queryFn: projectsApi.list });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  const deleteMut = useMutation({
+    mutationFn: projectsApi.delete,
+    onSuccess: (_, deletedId) => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      if (activeProjectId === deletedId) setActiveProjectId(null);
+    },
+  });
 
   const pollMut = useMutation({
     mutationFn: adminApi.poll,
@@ -74,6 +84,7 @@ export function DashboardPage() {
   function selectProject(p: Project) {
     setActiveProjectId(p.id);
     setExpandedBatchIds(new Set());
+    setCreatingProject(false);
   }
 
   function toggleBatch(batchId: string) {
@@ -87,7 +98,7 @@ export function DashboardPage() {
   return (
     <div className="page" style={{ maxWidth: 1200 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
-        <h2 style={{ margin: 0 }}>Dashboard</h2>
+        <h2 style={{ margin: 0 }}>ASF</h2>
         <button
           className="btn btn-ghost btn-sm"
           disabled={pollMut.isPending}
@@ -120,44 +131,70 @@ export function DashboardPage() {
 
         {/* ── Project list ──────────────────────────────────────────────── */}
         <div className="card" style={{ padding: "12px 8px" }}>
-          <div style={{ padding: "4px 10px 10px", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>
-            Projects
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 10px 10px" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>
+              Projects
+            </span>
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ fontSize: 11, padding: "2px 6px" }}
+              onClick={() => { setCreatingProject(true); setActiveProjectId(null); }}
+            >
+              + New
+            </button>
           </div>
           {!projects?.length && (
             <div style={{ padding: "12px 10px", fontSize: 13, color: "var(--text-muted)" }}>No projects yet.</div>
           )}
           {projects?.map((p) => (
-            <button
+            <div
               key={p.id}
               onClick={() => selectProject(p)}
               style={{
-                width: "100%", display: "block", textAlign: "left",
-                padding: "8px 10px", borderRadius: 6, border: "none",
+                display: "flex", alignItems: "center", gap: 4,
+                padding: "8px 6px 8px 10px", borderRadius: 6,
                 background: activeProjectId === p.id ? "var(--primary-light)" : "transparent",
                 color: activeProjectId === p.id ? "var(--primary-text)" : "var(--text)",
                 fontWeight: activeProjectId === p.id ? 600 : 400,
                 fontFamily: "var(--font)", fontSize: 13, cursor: "pointer", marginBottom: 2,
               }}
             >
-              <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-              <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 1 }}>Track {p.track_number}</div>
-            </button>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 1 }}>Track {p.track_number}</div>
+              </div>
+              <button
+                className="btn btn-ghost btn-sm"
+                title="Delete project"
+                style={{ fontSize: 11, padding: "2px 6px", flexShrink: 0, opacity: 0.6 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirm(`Delete "${p.name}"?`)) deleteMut.mutate(p.id);
+                }}
+              >
+                ×
+              </button>
+            </div>
           ))}
         </div>
 
         {/* ── Right panel ───────────────────────────────────────────────── */}
         <div>
-          {!activeProjectId && (
+          {creatingProject && (
+            <NewProjectWizard onDone={() => setCreatingProject(false)} />
+          )}
+
+          {!creatingProject && !activeProjectId && (
             <div className="card" style={{ padding: 48, textAlign: "center" }}>
               <div style={{ fontSize: 28, marginBottom: 10 }}>◈</div>
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Select a project</div>
               <div style={{ color: "var(--text-muted)", fontSize: 13 }}>
-                Choose a project on the left to view its batches and job status.
+                Choose a project on the left, or create a new one, to view its batches and job status.
               </div>
             </div>
           )}
 
-          {activeProject && (
+          {!creatingProject && activeProject && (
             <>
               <div className="card" style={{ padding: "14px 18px", marginBottom: 16, display: "flex", alignItems: "center", gap: 16 }}>
                 <div style={{ flex: 1 }}>
