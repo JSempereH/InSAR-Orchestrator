@@ -70,7 +70,7 @@ function ProjectCard({ project: p, onDelete }: { project: Project; onDelete: () 
         {p.description && <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{p.description}</div>}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
           <Chip label={`Track ${p.track_number}`} />
-          <Chip label={p.flight_direction ?? "—"} />
+          <Chip label={p.flight_direction ?? "-"} />
           <Chip label={`${p.date_start} → ${p.date_end}`} />
           <Chip label={`${p.max_temporal_neighbors} neighbors`} />
           <Chip label={p.storage_path ? `💾 ${p.storage_path}` : "💾 Default storage"} />
@@ -270,7 +270,7 @@ function NewProject({ onDone }: { onDone: () => void }) {
                 {storageTargets?.map((t) => (
                   <option key={t.mountpoint ?? "default"} value={t.mountpoint ?? ""} disabled={!t.writable}>
                     {t.mountpoint ? `${t.mountpoint} (${t.device})` : "App default"}
-                    {" — "}{t.free_gb} GB free of {t.total_gb} GB{!t.writable ? " — not writable" : ""}
+                    {" · "}{t.free_gb} GB free of {t.total_gb} GB{!t.writable ? " · not writable" : ""}
                   </option>
                 ))}
               </select>
