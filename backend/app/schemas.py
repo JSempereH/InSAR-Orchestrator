@@ -171,6 +171,38 @@ class EGMSDownloadRequest(BaseModel):
     products: list[EGMSProductOut]
     destination_name: str = Field(..., description="Subfolder name for these downloads")
     storage_mountpoint: Optional[str] = Field(None, description="Omit for the app default")
+    # Search params that produced `products`, kept so the download is browsable/visualizable later.
+    geometry: dict[str, Any]
+    level: str
+    release: str
+    direction: Optional[str] = None
+    product_type: Optional[str] = None
+    tile_id: Optional[str] = None
+
+
+class EGMSDownloadOut(BaseModel):
+    id: str
+    name: str
+    geometry: dict[str, Any]
+    level: str
+    release: str
+    direction: Optional[str]
+    product_type: Optional[str]
+    tile_id: Optional[str]
+    destination_path: str
+    filenames: list[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ---------- Downloads inventory (ASF/HyP3 side) ----------
+
+class ProjectDownloadSummaryOut(BaseModel):
+    storage_path: Optional[str]
+    total_jobs: int
+    downloaded_jobs: int
 
 
 # ---------- Storage ----------
