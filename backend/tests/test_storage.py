@@ -1,4 +1,7 @@
 """Per-project storage destination: disk listing + project creation wiring."""
+from pathlib import Path
+
+from app.config import settings
 
 
 def _project_payload(**overrides):
@@ -22,10 +25,13 @@ def test_list_storage_targets_includes_app_default(client):
     assert default["free_gb"] >= 0
 
 
-def test_create_project_without_mountpoint_uses_app_default(client):
-    resp = client.post("/api/projects", json=_project_payload())
+def test_create_project_without_mountpoint_gets_a_subfolder_under_app_default(client):
+    resp = client.post("/api/projects", json=_project_payload(name="Default Storage Project"))
     assert resp.status_code == 200
-    assert resp.json()["storage_path"] is None
+
+    expected = Path(settings.downloads_dir) / "default-storage-project"
+    assert resp.json()["storage_path"] == str(expected)
+    assert expected.is_dir()
 
 
 def test_create_project_with_mountpoint_resolves_and_creates_folder(client, tmp_path):
