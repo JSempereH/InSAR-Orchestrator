@@ -3,17 +3,19 @@ import { useState } from "react";
 import { DashboardPage } from "./pages/Dashboard";
 import { ProjectsPage } from "./pages/Projects";
 import { GroundMotionPage } from "./pages/GroundMotion";
+import { DownloadsPage } from "./pages/Downloads";
 import { SettingsPage } from "./pages/Settings";
 import "./App.css";
 
 const queryClient = new QueryClient();
 
-type Page = "dashboard" | "projects" | "ground-motion" | "settings";
+type Page = "dashboard" | "projects" | "ground-motion" | "downloads" | "settings";
 
 const NAV: { id: Page; icon: string; label: string }[] = [
   { id: "dashboard",      icon: "◈", label: "Dashboard" },
   { id: "projects",       icon: "⊞", label: "Projects" },
   { id: "ground-motion",  icon: "⛰", label: "Ground Motion" },
+  { id: "downloads",      icon: "⬇", label: "Downloads" },
   { id: "settings",       icon: "⚙", label: "Settings" },
 ];
 
@@ -109,6 +111,7 @@ function App() {
           {page === "dashboard"      && <DashboardPage />}
           {page === "projects"       && <ProjectsPage />}
           {page === "ground-motion"  && <GroundMotionPage onGoToSettings={() => setPage("settings")} />}
+          {page === "downloads"      && <DownloadsPage />}
           {page === "settings"       && <SettingsPage />}
         </main>
       </div>
