@@ -299,8 +299,8 @@ function JobRow({
             />
           )}
         </td>
-        <td style={{ fontFamily: "monospace" }}>{job.reference_date ?? "—"}</td>
-        <td style={{ fontFamily: "monospace" }}>{job.secondary_date ?? "—"}</td>
+        <td style={{ fontFamily: "monospace" }}>{job.reference_date ?? "-"}</td>
+        <td style={{ fontFamily: "monospace" }}>{job.secondary_date ?? "-"}</td>
         <td>
           <span
             className={`badge ${BADGE[job.status] ?? "badge-pending"}`}
@@ -313,16 +313,16 @@ function JobRow({
         <td style={{ fontFamily: "monospace", color: "var(--text-muted)", fontSize: 11 }}>
           {job.hyp3_job_id
             ? <span title={job.hyp3_job_id}>{job.hyp3_job_id.slice(0, 8)}…</span>
-            : "—"}
+            : "-"}
         </td>
-        <td style={{ color: "var(--text-muted)" }}>{job.credit_cost ?? "—"}</td>
+        <td style={{ color: "var(--text-muted)" }}>{job.credit_cost ?? "-"}</td>
         <td>
           {job.downloaded ? (
             <span style={{ color: "var(--success)", fontWeight: 600 }}>✓</span>
           ) : isInQueue ? (
             <span style={{ color: "var(--text-faint)", fontSize: 11 }}>queued</span>
           ) : (
-            <span style={{ color: "var(--text-faint)" }}>—</span>
+            <span style={{ color: "var(--text-faint)" }}>-</span>
           )}
         </td>
         <td>
