@@ -4,9 +4,9 @@ import { egmsApi, storageApi, EGMSProduct, EGMSQueueState } from "../api/client"
 import { AOIMap } from "../components/Map/AOIMap";
 
 const LEVELS = [
-  { value: "L2A", label: "L2a — Ascending/descending displacement" },
-  { value: "L2B", label: "L2b — Calibrated displacement" },
-  { value: "L3", label: "L3 — Ortho (vertical / east-west velocity)" },
+  { value: "L2A", label: "L2a: Ascending/descending displacement" },
+  { value: "L2B", label: "L2b: Calibrated displacement" },
+  { value: "L3", label: "L3: Ortho (vertical / east-west velocity)" },
 ];
 
 const DIRECTIONS = [
@@ -93,8 +93,17 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
         products: selectedProducts,
         destination_name: destinationName,
         storage_mountpoint: storageMountpoint || undefined,
+        geometry: geometry!,
+        level,
+        release,
+        direction: isL3 ? undefined : direction,
+        product_type: isL3 ? productType : undefined,
+        tile_id: isL3 && tileId ? tileId : undefined,
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["egms-download-queue"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["egms-download-queue"] });
+      qc.invalidateQueries({ queryKey: ["egms-downloads"] });
+    },
   });
 
   const cancelMut = useMutation({
@@ -115,7 +124,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
       <h2 style={{ marginBottom: 4 }}>Ground Motion (EGMS)</h2>
       <p style={{ margin: "0 0 20px", color: "var(--text-muted)", fontSize: 13 }}>
         Search and download finished ground-motion products from the Copernicus European Ground
-        Motion Service for an area of interest — no HyP3 processing involved.
+        Motion Service for an area of interest. No HyP3 processing involved.
       </p>
 
       {needsCredentials && (
@@ -163,7 +172,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
           <div className="field">
             <label>Release</label>
             <select className="input" value={release} onChange={(e) => setRelease(e.target.value)} disabled={!releasesQuery.data?.length}>
-              {!releasesQuery.data?.length && <option value="">—</option>}
+              {!releasesQuery.data?.length && <option value="">-</option>}
               {releasesQuery.data?.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
           </div>
@@ -182,7 +191,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
               <div className="field">
                 <label>Component</label>
                 <select className="input" value={productType} onChange={(e) => setProductType(e.target.value)} disabled={!productTypesQuery.data?.length}>
-                  {!productTypesQuery.data?.length && <option value="">—</option>}
+                  {!productTypesQuery.data?.length && <option value="">-</option>}
                   {productTypesQuery.data?.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
               </div>
@@ -241,7 +250,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
                     {storageTargets?.map((t) => (
                       <option key={t.mountpoint ?? "default"} value={t.mountpoint ?? ""} disabled={!t.writable}>
                         {t.mountpoint ? `${t.mountpoint} (${t.device})` : "App default"}
-                        {" — "}{t.free_gb} GB free{!t.writable ? " — not writable" : ""}
+                        {" · "}{t.free_gb} GB free{!t.writable ? " · not writable" : ""}
                       </option>
                     ))}
                   </select>
@@ -295,7 +304,7 @@ function ProductRow({ product, checked, onToggle }: { product: EGMSProduct; chec
         {product.filename}
       </span>
       <span style={{ fontSize: 11, color: "var(--text-faint)" }}>
-        {product.size_mb ? `${product.size_mb.toFixed(1)} MB` : "—"}
+        {product.size_mb ? `${product.size_mb.toFixed(1)} MB` : "-"}
       </span>
     </label>
   );
