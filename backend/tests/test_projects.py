@@ -45,3 +45,19 @@ def test_delete_project_removes_it(client):
 def test_delete_nonexistent_project_returns_404(client):
     resp = client.delete("/api/projects/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_download_summary_for_project_with_no_jobs(client):
+    created = client.post("/api/projects", json=_project_payload(name="Summary Project")).json()
+
+    resp = client.get(f"/api/projects/{created['id']}/download-summary")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["storage_path"] == created["storage_path"]
+    assert body["total_jobs"] == 0
+    assert body["downloaded_jobs"] == 0
+
+
+def test_download_summary_for_nonexistent_project_returns_404(client):
+    resp = client.get("/api/projects/does-not-exist/download-summary")
+    assert resp.status_code == 404
