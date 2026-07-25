@@ -38,6 +38,30 @@ class Credential(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class EGMSDownload(Base):
+    """A completed (or in-progress) EGMS product download session for one AOI.
+
+    One row per "search + download" action - `filenames` lists every product
+    file placed under `destination_path`.
+    """
+    __tablename__ = "egms_downloads"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    geometry = Column(JSON, nullable=False)
+
+    level = Column(String, nullable=False)         # L2A / L2B / L3
+    release = Column(String, nullable=False)
+    direction = Column(String, nullable=True)
+    product_type = Column(String, nullable=True)
+    tile_id = Column(String, nullable=True)
+
+    destination_path = Column(String, nullable=False)
+    filenames = Column(JSON, nullable=False)        # list[str]
+
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class JobStatus(str, enum.Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
