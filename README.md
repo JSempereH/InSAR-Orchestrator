@@ -40,6 +40,19 @@ insar-orchestrator/
 
 ## Setup
 
+### Quick start
+
+Requires [`uv`](https://docs.astral.sh/uv/getting-started/installation/) and Node.js ≥ 18 to be installed. Then:
+
+```bash
+git clone <repo-url> insar-orchestrator
+cd insar-orchestrator
+./setup.sh   # creates backend/.venv, installs backend + insar_core + frontend deps, prepares backend/.env
+./dev.sh     # runs backend (:8000) and frontend (:5173) together, Ctrl+C stops both
+```
+
+That's it — skip to [step 3](#3-configure-earthdata-credentials) below to set up Earthdata credentials. The manual steps below are kept as a reference (e.g. for Windows, or if you don't want to use `uv`).
+
 ### 1. Clone and install the core library
 
 ```bash

@@ -2,6 +2,8 @@
 
 FastAPI REST API with SQLite persistence.
 
+> Run `../setup.sh` from the repo root to install this backend's venv + dependencies automatically, then `../dev.sh` to run it alongside the frontend.
+
 ## Running
 
 ```bash
