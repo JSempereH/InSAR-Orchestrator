@@ -32,6 +32,7 @@ hyp3_downloads_murcia/
 mintpy_murcia/
 *.zip
 backend/downloads/
+worker/runs/
 hyp3_jobs_murcia.json
 sentinel1_murcia_scenes.csv
 hyp3_openapi.json
