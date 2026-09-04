@@ -11,3 +11,22 @@ members = ["packages/insar_core"]
 
 [tool.uv.sources]
 insar-core = { workspace = true }
+
+[tool.ruff]
+line-length = 160
+target-version = "py311"
+extend-exclude = ["frontend", "packages/insar_core/build"]
+
+[tool.ruff.lint]
+select = ["E", "F", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom, not the mutable-default footgun B008 targets.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Header"]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest.py deliberately sets env vars before importing app.config anywhere
+# else, so app never touches a real WORKER_OUTPUT_DIR/DOWNLOADS_DIR in tests.
+"backend/tests/conftest.py" = ["E402"]
+"worker/tests/conftest.py" = ["E402"]
