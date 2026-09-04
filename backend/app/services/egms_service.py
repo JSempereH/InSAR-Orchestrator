@@ -25,19 +25,19 @@ def _get_service_key(db: Session) -> dict:
         )
     try:
         return json.loads(decrypt(row.encrypted_password))
-    except InvalidToken:
+    except InvalidToken as exc:
         raise HTTPException(
             status_code=422,
             detail=(
                 "Stored EGMS credentials could not be decrypted. The SECRET_KEY has changed "
                 "since they were saved. Please re-upload your CLMS service-account key in Settings."
             ),
-        )
+        ) from exc
     except (json.JSONDecodeError, KeyError) as exc:
         raise HTTPException(
             status_code=422,
             detail=f"Stored EGMS service-account key is malformed: {exc}",
-        )
+        ) from exc
 
 
 def get_egms_adapter(db: Session) -> EGMSAdapter:
