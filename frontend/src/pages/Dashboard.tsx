@@ -5,6 +5,8 @@ import {
   Batch, Project, QueueState,
 } from "../api/client";
 import { JobTable } from "../components/JobMonitor/JobTable";
+import { CreditsWidget } from "../components/JobMonitor/CreditsWidget";
+import { MintPyPanel } from "../components/JobMonitor/MintPyPanel";
 import { NewProjectWizard } from "../components/ProjectWizard/NewProjectWizard";
 
 export function DashboardPage() {
@@ -99,15 +101,17 @@ export function DashboardPage() {
     <div className="page" style={{ maxWidth: 1200 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
         <h2 style={{ margin: 0 }}>ASF</h2>
-        <button
-          className="btn btn-ghost btn-sm"
-          disabled={pollMut.isPending}
-          onClick={() => pollMut.mutate()}
-          title="Force an immediate HyP3 status sync"
-          style={{ marginLeft: "auto" }}
-        >
-          {pollMut.isPending ? "Syncing…" : "↻ Sync now"}
-        </button>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
+          <CreditsWidget />
+          <button
+            className="btn btn-ghost btn-sm"
+            disabled={pollMut.isPending}
+            onClick={() => pollMut.mutate()}
+            title="Force an immediate HyP3 status sync"
+          >
+            {pollMut.isPending ? "Syncing…" : "↻ Sync now"}
+          </button>
+        </div>
       </div>
       <p style={{ margin: "0 0 16px", color: "var(--text-muted)", fontSize: 13 }}>
         Monitor and manage your InSAR processing batches.
@@ -234,6 +238,8 @@ export function DashboardPage() {
                   onToggle={() => toggleBatch(b.id)}
                 />
               ))}
+
+              {!!batches?.length && <MintPyPanel projectId={activeProjectId!} />}
             </>
           )}
         </div>
