@@ -116,7 +116,8 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
 
   // ── Cursor ─────────────────────────────────────────────────────────────────
   useEffect(() => {
-    mapRef.current?.getCanvas().style && (mapRef.current.getCanvas().style.cursor = drawing ? "crosshair" : "");
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = drawing ? "crosshair" : "";
   }, [drawing]);
 
   // ── Actions ────────────────────────────────────────────────────────────────
