@@ -31,3 +31,8 @@ Interactive API docs at `http://localhost:8000/docs`.
 | POST/GET/DELETE | `/api/downloads/queue` | Manage the download queue |
 | POST | `/api/admin/poll` | Force immediate HyP3 status sync |
 | WS | `/ws/batches/{id}` | Real-time job status stream |
+| GET | `/api/credits` | Last known HyP3 credit balance (background-refreshed every 5 min) |
+| POST | `/api/admin/poll-credits` | Force an immediate HyP3 credit-balance refresh |
+| POST | `/api/projects/{id}/mintpy/run` | Start MintPy SBAS over the project's downloaded interferograms (requires MintPy on this host) |
+| GET | `/api/projects/{id}/mintpy/status` | Poll status + tailing log of the project's MintPy run |
+| DELETE | `/api/projects/{id}/mintpy` | Cancel a running MintPy job |
