@@ -5,7 +5,6 @@ Run with: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 """
 
 import asyncio
-import json
 import logging
 from typing import Any
 
@@ -17,12 +16,17 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import Base, engine, SessionLocal
-from app.models import Batch, Job, JobStatus
-from app.routers import batches, credentials, egms, jobs, projects, scenes, storage
+from app.models import Batch
+from app.routers import batches, credentials, egms, jobs, mintpy, projects, scenes, storage
+from app.services import credits_service
 from app.services.polling_service import poll_active_jobs, force_poll
 from app.services import download_queue
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 def _migrate_schema() -> None:
@@ -37,6 +41,14 @@ def _migrate_schema() -> None:
 
 Base.metadata.create_all(bind=engine)
 _migrate_schema()
+
+if not settings.secret_key:
+    logger.warning(
+        "SECRET_KEY is not set (backend/.env). A key is generated in memory for this "
+        "process only, so any stored credentials (Earthdata, EGMS) "
+        "will fail to decrypt after a restart. Run ../setup.sh or set SECRET_KEY "
+        "yourself before relying on this outside local development."
+    )
 
 app = FastAPI(title="InSAR Orchestrator API", version="0.2.0")
 
@@ -55,11 +67,13 @@ app.include_router(credentials.router)
 app.include_router(jobs.router)
 app.include_router(storage.router)
 app.include_router(egms.router)
+app.include_router(mintpy.router)
 
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(poll_active_jobs())
+    asyncio.create_task(credits_service.poll_credits())
 
 
 @app.get("/api/health")
@@ -72,6 +86,20 @@ async def trigger_poll():
     """Force an immediate HyP3 status sync for all active jobs."""
     result = await force_poll()
     return result
+
+
+@app.get("/api/credits")
+def get_credits():
+    """Last known HyP3 credit balance, refreshed every 5 minutes in the
+    background. `updated_at` and `refresh_interval_seconds` let the frontend
+    show "updated Ns ago" / "next update in ~Ns" without polling HyP3 itself."""
+    return credits_service.get_snapshot()
+
+
+@app.post("/api/admin/poll-credits")
+async def trigger_credits_poll():
+    """Force an immediate HyP3 credit-balance refresh."""
+    return await credits_service.force_poll()
 
 
 # ── Download queue ────────────────────────────────────────────────────────────
@@ -95,6 +123,7 @@ def get_download_queue():
 def cancel_download_queue():
     download_queue.cancel()
     return {"cancelled": True}
+
 
 
 # ── WebSocket: real-time job status for a batch ──────────────────────────────
