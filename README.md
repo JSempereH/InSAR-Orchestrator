@@ -167,20 +167,23 @@ npm run build   # outputs to frontend/dist/
 
 ## Running everything in containers
 
-`Dockerfile`s exist for `backend/` and `frontend/`, tied together by
-`docker-compose.yml` at the *Sentinel-Orchestrator* repo root:
+`Dockerfile`s exist for `backend/` and `frontend/`, tied together by this
+repo's own `docker-compose.yml`:
 
 ```bash
-cd ../Sentinel-Orchestrator   # or wherever this repo's sibling is checked out
-cp InSAR-Orchestrator/backend/.env.example InSAR-Orchestrator/backend/.env
-# fill in SECRET_KEY
+cp backend/.env.example backend/.env   # fill in SECRET_KEY
 docker compose up --build
 ```
 
-Or via the Makefile there: `make docker-build` / `make docker-up`. The
-backend image doesn't bundle MintPy - it's a large, separate scientific
+Or via this repo's own `Makefile`: `make docker-build` / `make docker-up`.
+The backend image doesn't bundle MintPy - it's a large, separate scientific
 stack you'd add explicitly if you want SBAS runs to happen inside the
 container rather than on the host.
+
+This repo and the sibling `sentinel_analysis`/`sentinel-worker` repo have no
+runtime dependency on each other (see that repo's `docs/platform.md`), so
+each keeps its own `Makefile` and `docker-compose.yml` rather than sharing
+one at a common root.
 
 CI (`.github/workflows/ci.yml`) lints and tests `insar_core`, the backend,
 and the frontend build on every push/PR.
