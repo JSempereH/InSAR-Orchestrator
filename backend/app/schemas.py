@@ -51,10 +51,16 @@ class BatchOut(BaseModel):
     project_id: str
     label: Optional[str]
     total_pairs: int
+    status: str
+    auto_download: bool
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class BatchUpdate(BaseModel):
+    auto_download: bool
 
 
 # ---------- Job ----------
@@ -99,6 +105,7 @@ class SubmitBatchRequest(BaseModel):
     label: Optional[str] = None
     max_temporal_neighbors: int = 3
     dry_run: bool = True
+    auto_download: bool = False
 
 
 # ---------- Credentials ----------
@@ -138,6 +145,26 @@ class SceneOut(BaseModel):
     flight_direction: str
     polarization: str
     size_mb: Optional[float]
+    download_url: Optional[str] = None
+    file_name: Optional[str] = None
+    already_downloaded: bool = False
+
+
+# ---------- Raw SLC downloads (input for external PS-InSAR pipelines) ----------
+
+class SLCDownloadRequest(BaseModel):
+    scenes: list[SceneOut]
+
+
+class SLCDownloadOut(BaseModel):
+    id: str
+    project_id: str
+    destination_path: str
+    filenames: list[str]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 # ---------- Batch submission ----------
@@ -146,6 +173,7 @@ class BatchPlanOut(BaseModel):
     total_pairs: int
     scene_count: int
     pairs_preview: list[list[str]]  # [[ref, sec], ...]
+    estimated_size_gb: Optional[float] = None
 
 
 # ---------- EGMS (Copernicus ground motion) ----------
@@ -214,3 +242,23 @@ class StorageTargetOut(BaseModel):
     total_gb: float
     free_gb: float
     writable: bool
+
+
+class PathUsageOut(BaseModel):
+    path: str
+    used_gb: float
+    free_gb: float
+    total_gb: float
+
+
+class MoveRequest(BaseModel):
+    mountpoint: Optional[str] = None  # None = app default
+
+
+class MoveStateOut(BaseModel):
+    active: bool
+    status: str  # "idle" | "running" | "done" | "error"
+    pct: float
+    src: Optional[str] = None
+    dst: Optional[str] = None
+    error: Optional[str] = None
