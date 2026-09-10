@@ -120,7 +120,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 900 }}>
+    <div className="page" style={{ maxWidth: 1300 }}>
       <h2 style={{ marginBottom: 4 }}>Ground Motion (EGMS)</h2>
       <p style={{ margin: "0 0 20px", color: "var(--text-muted)", fontSize: 13 }}>
         Search and download finished ground-motion products from the Copernicus European Ground

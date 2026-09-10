@@ -109,12 +109,8 @@ export function DownloadsPage() {
   const moveBusy = !!moveState?.active;
 
   return (
-    <div className="page" style={{ maxWidth: 1200 }}>
-      <h2 style={{ marginBottom: 4 }}>Downloads</h2>
-      <p style={{ margin: "0 0 20px", color: "var(--text-muted)", fontSize: 13 }}>
-        Everything downloaded so far, from both ASF/HyP3 projects and EGMS ground-motion products:
-        what it is, how much space it uses, where it lives on disk, and where it sits on the map.
-      </p>
+    <div className="page">
+      <h2 style={{ marginBottom: 16 }}>Downloads</h2>
 
       <StorageOverview targets={storageTargets ?? []} />
 

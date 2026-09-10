@@ -1,4 +1,7 @@
-# InSAR Orchestrator
+![InSAR Orchestrator](docs/images/banner.svg)
+
+[![CI](https://github.com/JSempereH/InSAR-Orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/JSempereH/InSAR-Orchestrator/actions/workflows/ci.yml)
+[![License: EUPL-1.2](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](LICENSE)
 
 A self-hosted, end-to-end InSAR processing platform for Sentinel-1 data. Instead of navigating ASF, HyP3, or ESGM dashboards separately, this tool centralises everything: draw an area on a map, discover available satellite tracks, submit interferometric pairs to HyP3 for cloud processing, monitor jobs in real time, and prepare results for MintPy SBAS analysis, all from a single web UI.
 
@@ -25,10 +28,7 @@ insar-orchestrator/
 ```
 
 This repo is scoped to InSAR: draw an AOI, discover tracks, submit pairs to
-HyP3, monitor jobs, run MintPy SBAS on the results. Multisensor analysis
-(Sentinel-1/2/3/5P + ERA5/CAMS/OpenAQ fusion) is a different tool - it lives
-in the sibling [`sentinel_analysis`](../README.md) repository instead of
-here, including its own `worker` service.
+HyP3, monitor jobs, run MintPy SBAS on the results.
 
 ---
 
@@ -56,7 +56,7 @@ cd insar-orchestrator
 ./dev.sh     # runs backend (:8000) and frontend (:5173) together, Ctrl+C stops both
 ```
 
-That's it — skip to [step 3](#3-configure-earthdata-credentials) below to set up Earthdata credentials. The manual steps below are kept as a reference (e.g. for Windows, or if you don't want to use `uv`).
+That's it, skip to [step 3](#3-configure-earthdata-credentials) below to set up Earthdata credentials. The manual steps below are kept as a reference (e.g. for Windows, or if you don't want to use `uv`).
 
 ### 1. Clone and install the core library
 
@@ -113,7 +113,7 @@ machine urs.earthdata.nasa.gov
 chmod 600 ~/.netrc
 ```
 
-**Option C: web UI** (Settings page): credentials are encrypted with Fernet before being stored in the database.
+**Option C: web UI** (Settings page): credentials are encrypted with Fernet before being stored in the database. Note this is a **research** tool. It is not intended for production, so do not expect production-grade security.
 
 
 ---
@@ -180,11 +180,6 @@ The backend image doesn't bundle MintPy - it's a large, separate scientific
 stack you'd add explicitly if you want SBAS runs to happen inside the
 container rather than on the host.
 
-This repo and the sibling `sentinel_analysis`/`sentinel-worker` repo have no
-runtime dependency on each other (see that repo's `docs/platform.md`), so
-each keeps its own `Makefile` and `docker-compose.yml` rather than sharing
-one at a common root.
-
 CI (`.github/workflows/ci.yml`) lints and tests `insar_core`, the backend,
 and the frontend build on every push/PR.
 
@@ -227,3 +222,17 @@ for ref, sec in pairs[:1]:   # test with one pair first
     job = hyp3.submit_pair(ref.granule_name, sec.granule_name, name="my-project")
     print(f"Submitted: {job.hyp3_job_id} [{job.status}]")
 ```
+
+---
+
+## Screenshots
+
+| ASF / HyP3 job monitor | Downloads overview |
+|---|---|
+| ![ASF panel](docs/images/asf-panel-example.png) | ![Downloads panel](docs/images/download-panel-example.png) |
+
+---
+
+## License
+
+Licensed under the [European Union Public Licence v. 1.2](LICENSE) (EUPL-1.2).

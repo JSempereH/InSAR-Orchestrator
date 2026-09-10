@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
-  adminApi, batchesApi, downloadQueueApi, jobsApi, projectsApi,
+  adminApi, batchesApi, creditsApi, downloadQueueApi, jobsApi, projectsApi,
   Batch, Project, QueueState,
 } from "../api/client";
 import { JobTable } from "../components/JobMonitor/JobTable";
@@ -9,6 +9,7 @@ import { CreditsWidget } from "../components/JobMonitor/CreditsWidget";
 import { MintPyPanel } from "../components/JobMonitor/MintPyPanel";
 import { NewProjectWizard } from "../components/ProjectWizard/NewProjectWizard";
 import { SLCPanel } from "../components/SLC/SLCPanel";
+import { RefreshIcon } from "../components/icons";
 
 export function DashboardPage() {
   const qc = useQueryClient();
@@ -27,8 +28,11 @@ export function DashboardPage() {
   });
 
   const pollMut = useMutation({
-    mutationFn: adminApi.poll,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+    mutationFn: () => Promise.all([adminApi.poll(), creditsApi.refresh()]).then(([poll]) => poll),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["hyp3-credits"] });
+    },
   });
 
   // Poll download queue state (active when queue is running)
@@ -111,7 +115,7 @@ export function DashboardPage() {
   }
 
   return (
-    <div className="page" style={{ maxWidth: 1200 }}>
+    <div className="page">
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
         <h2 style={{ margin: 0 }}>ASF</h2>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
@@ -121,8 +125,9 @@ export function DashboardPage() {
             disabled={pollMut.isPending}
             onClick={() => pollMut.mutate()}
             title="Force an immediate HyP3 status sync"
+            aria-label="Sync now"
           >
-            {pollMut.isPending ? "Syncing…" : "↻ Sync now"}
+            <RefreshIcon spinning={pollMut.isPending} />
           </button>
         </div>
       </div>

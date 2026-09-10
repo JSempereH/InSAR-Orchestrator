@@ -96,12 +96,6 @@ function App() {
             })}
           </div>
 
-          {/* Footer */}
-          <div style={{ padding: "12px 16px", borderTop: "1px solid var(--sidebar-border)" }}>
-            <div style={{ fontSize: 11, color: "#334155" }}>
-              Sentinel-1 · ASF · HyP3 · EGMS · MintPy
-            </div>
-          </div>
         </nav>
 
         {/* ── Main ──────────────────────────────────────── */}
