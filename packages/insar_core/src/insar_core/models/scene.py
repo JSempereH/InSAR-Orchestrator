@@ -54,6 +54,11 @@ class SARScene:
     flight_direction: str   # ASCENDING or DESCENDING
     polarization: str
     size_mb: Optional[float] = None
+    # Direct ASF data-pool URL for the raw SLC product and its filename.
+    # Only needed for downloading the SLC itself (not for HyP3 submission,
+    # which only needs granule_name).
+    download_url: Optional[str] = None
+    file_name: Optional[str] = None
 
 
 @dataclass
