@@ -29,11 +29,13 @@ _EXCLUDED_MOUNT_PREFIXES = ("/boot", "/snap", "/dev")
 def list_storage_targets() -> list[dict]:
     """Return the app default plus real, writable disks/partitions.
 
-    The partition backing the app-default path is skipped from the second list.
+    The partition backing the app-default path is skipped from the second
+    list, found by longest-matching mountpoint prefix - no extra `stat()`
+    call per partition, since that can hang indefinitely on some hosts for
+    mountpoints that don't respond to it (seen on GitHub Actions runners).
     """
     default_path = os.path.abspath(settings.downloads_dir)
     usage = psutil.disk_usage(default_path)
-    default_dev = os.stat(default_path).st_dev
     targets = [{
         "mountpoint": None,
         "device": "app-default",
@@ -43,15 +45,25 @@ def list_storage_targets() -> list[dict]:
         "writable": True,
     }]
 
-    for part in psutil.disk_partitions(all=False):
+    partitions = list(psutil.disk_partitions(all=False))
+    default_device = None
+    best_match_len = -1
+    for part in partitions:
+        mp = part.mountpoint.rstrip("/") or "/"
+        if default_path == mp or default_path.startswith(mp + "/") or mp == "/":
+            if len(mp) > best_match_len:
+                best_match_len = len(mp)
+                default_device = part.device
+
+    for part in partitions:
         if part.fstype in _EXCLUDED_FSTYPES:
             continue
         if part.mountpoint.startswith(_EXCLUDED_MOUNT_PREFIXES):
             continue
+        if part.device == default_device:
+            continue
         try:
             usage = psutil.disk_usage(part.mountpoint)
-            if os.stat(part.mountpoint).st_dev == default_dev:
-                continue
         except OSError:
             continue
         targets.append({
