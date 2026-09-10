@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "End-to-end InSAR processing orchestrator: scene discovery, cloud processing, SBAS analysis"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "EUPL-1.2"
 dependencies = []
 
 [tool.uv.workspace]
