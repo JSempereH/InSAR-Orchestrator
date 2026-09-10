@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    Column, String, Float, Integer, DateTime, ForeignKey, Enum, Text, JSON
+    Column, String, Float, Integer, DateTime, ForeignKey, Enum, Text, JSON, Boolean
 )
 from sqlalchemy.orm import relationship
 
@@ -95,6 +95,7 @@ class Project(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     batches = relationship("Batch", back_populates="project", cascade="all, delete-orphan")
+    slc_downloads = relationship("SLCDownload", back_populates="project", cascade="all, delete-orphan")
 
 
 class Batch(Base):
@@ -106,6 +107,12 @@ class Batch(Base):
 
     label = Column(String, nullable=True)
     total_pairs = Column(Integer, default=0)
+    # "submitting" while pairs are still being posted to HyP3 in the background,
+    # "done" once every pair has been attempted (success or failure).
+    status = Column(String, default="done", nullable=False)
+    # When true, jobs are queued for download automatically as soon as they
+    # succeed (checked by the polling loop). Can be toggled while a batch runs.
+    auto_download = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     project = relationship("Project", back_populates="batches")
@@ -140,3 +147,18 @@ class Job(Base):
     completed_at = Column(DateTime, nullable=True)
 
     batch = relationship("Batch", back_populates="jobs")
+
+
+class SLCDownload(Base):
+    """A batch of raw Sentinel-1 SLC scenes downloaded directly from ASF.
+    """
+    __tablename__ = "slc_downloads"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+
+    destination_path = Column(String, nullable=False)
+    filenames = Column(JSON, nullable=False)  # list[str] of requested SLC filenames
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    project = relationship("Project", back_populates="slc_downloads")
