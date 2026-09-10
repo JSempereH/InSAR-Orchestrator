@@ -16,7 +16,7 @@ insar-orchestrator/
 │   └── pipeline/          # SBAS pair builder, orchestrator, MintPy adapter
 ├── backend/               # FastAPI REST API + WebSocket
 │   └── app/
-│       ├── routers/       # projects, batches, jobs, scenes, credentials
+│       ├── routers/       # projects, batches, jobs, scenes, credentials, mintpy
 │       └── services/      # HyP3 integration, polling loop, encryption
 └── frontend/              # React 18 + Vite SPA
     └── src/
@@ -24,6 +24,11 @@ insar-orchestrator/
         └── pages/         # Dashboard, Projects wizard, Settings
 ```
 
+This repo is scoped to InSAR: draw an AOI, discover tracks, submit pairs to
+HyP3, monitor jobs, run MintPy SBAS on the results. Multisensor analysis
+(Sentinel-1/2/3/5P + ERA5/CAMS/OpenAQ fusion) is a different tool - it lives
+in the sibling [`sentinel_analysis`](../README.md) repository instead of
+here, including its own `worker` service.
 
 ---
 
@@ -136,6 +141,8 @@ Key endpoints:
 | GET | `/api/batches/{id}/jobs` | List jobs in a batch |
 | PUT | `/api/jobs/{id}/download` | Download a completed job |
 | POST | `/api/credentials` | Store encrypted Earthdata credentials |
+| GET | `/api/credits` | Last known HyP3 credit balance, refreshed every 5 min (shown live in the dashboard) |
+| POST | `/api/projects/{id}/mintpy/run` | Run MintPy SBAS over a project's downloaded interferograms (finishes the InSAR pipeline in-app; requires MintPy on this host) |
 | WS | `/ws/batches/{id}` | Real-time job status stream |
 
 ---
@@ -156,6 +163,30 @@ To build for production:
 npm run build   # outputs to frontend/dist/
 ```
 
+---
+
+## Running everything in containers
+
+`Dockerfile`s exist for `backend/` and `frontend/`, tied together by this
+repo's own `docker-compose.yml`:
+
+```bash
+cp backend/.env.example backend/.env   # fill in SECRET_KEY
+docker compose up --build
+```
+
+Or via this repo's own `Makefile`: `make docker-build` / `make docker-up`.
+The backend image doesn't bundle MintPy - it's a large, separate scientific
+stack you'd add explicitly if you want SBAS runs to happen inside the
+container rather than on the host.
+
+This repo and the sibling `sentinel_analysis`/`sentinel-worker` repo have no
+runtime dependency on each other (see that repo's `docs/platform.md`), so
+each keeps its own `Makefile` and `docker-compose.yml` rather than sharing
+one at a common root.
+
+CI (`.github/workflows/ci.yml`) lints and tests `insar_core`, the backend,
+and the frontend build on every push/PR.
 
 ---
 

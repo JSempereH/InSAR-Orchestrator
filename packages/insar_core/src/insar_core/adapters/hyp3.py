@@ -18,7 +18,6 @@ def _sdk_job_to_submitted(job) -> SubmittedJob:
         "SUCCEEDED": JobStatus.SUCCEEDED,
         "FAILED": JobStatus.FAILED,
     }
-    files = job.files or []
     granules = job.job_parameters.get("granules", ["", ""])
     ref = granules[0] if len(granules) > 0 else ""
     sec = granules[1] if len(granules) > 1 else ""

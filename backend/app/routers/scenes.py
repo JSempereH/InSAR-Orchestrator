@@ -1,6 +1,5 @@
-from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 
 from app.schemas import SceneSearchRequest, SceneOut, TrackSummaryOut
 from app.services import asf_service

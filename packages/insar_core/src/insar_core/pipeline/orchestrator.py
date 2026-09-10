@@ -107,7 +107,7 @@ class InSAROrchestrator:
         if failed:
             # Don't abort: return what succeeded; caller can inspect failures
             import warnings
-            warnings.warn(f"{len(failed)} pair(s) failed to submit: {failed[:3]}")
+            warnings.warn(f"{len(failed)} pair(s) failed to submit: {failed[:3]}", stacklevel=2)
 
         return jobs
 

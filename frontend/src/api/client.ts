@@ -291,6 +291,34 @@ export const adminApi = {
   poll: () => api.post<{ active: number; updated: number }>("/api/admin/poll").then((r) => r.data),
 };
 
+export interface CreditsSnapshot {
+  credits: number | null;
+  updated_at: string | null;
+  error: string | null;
+  refresh_interval_seconds: number;
+}
+
+export const creditsApi = {
+  get: () => api.get<CreditsSnapshot>("/api/credits").then((r) => r.data),
+  refresh: () => api.post<CreditsSnapshot>("/api/admin/poll-credits").then((r) => r.data),
+};
+
+export interface MintPyStatus {
+  status: "NOT_STARTED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  started_at?: string;
+  finished_at?: string | null;
+  return_code?: number | null;
+  error?: string | null;
+  work_dir?: string;
+  log_tail?: string;
+}
+
+export const mintpyApi = {
+  run: (projectId: string) => api.post<MintPyStatus>(`/api/projects/${projectId}/mintpy/run`).then((r) => r.data),
+  status: (projectId: string) => api.get<MintPyStatus>(`/api/projects/${projectId}/mintpy/status`).then((r) => r.data),
+  cancel: (projectId: string) => api.delete<MintPyStatus>(`/api/projects/${projectId}/mintpy`).then((r) => r.data),
+};
+
 export const downloadQueueApi = {
   start: (jobs: { job_id: string; hyp3_job_id: string }[]) =>
     api.post<QueueState>("/api/downloads/queue", { jobs }).then((r) => r.data),

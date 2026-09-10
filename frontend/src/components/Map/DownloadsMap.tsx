@@ -228,14 +228,16 @@ function boundsOf(geometries: GeoJSON.Geometry[]): maplibregl.LngLatBoundsLike |
   let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
   let found = false;
 
-  function visit(coords: any) {
+  type NestedCoords = number[] | NestedCoords[];
+
+  function visit(coords: NestedCoords) {
     if (typeof coords[0] === "number") {
-      const [lon, lat] = coords;
+      const [lon, lat] = coords as number[];
       found = true;
       minLon = Math.min(minLon, lon); maxLon = Math.max(maxLon, lon);
       minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat);
     } else {
-      coords.forEach(visit);
+      (coords as NestedCoords[]).forEach(visit);
     }
   }
 

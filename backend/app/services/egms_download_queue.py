@@ -44,7 +44,7 @@ def resolve_destination(mountpoint: Optional[str], name: str) -> Path:
         raise HTTPException(
             status_code=400,
             detail=f"Storage destination '{mountpoint}' is not available: {exc}",
-        )
+        ) from exc
     return destination
 
 
