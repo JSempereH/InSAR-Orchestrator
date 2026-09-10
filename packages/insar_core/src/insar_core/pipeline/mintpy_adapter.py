@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import glob
-import os
 import subprocess
 import zipfile
 from pathlib import Path
@@ -70,7 +69,7 @@ class MintPyAdapter:
         return subprocess.run(cmd, check=False)
 
     def run_full_pipeline(self, config_path: Optional[Path] = None) -> subprocess.CompletedProcess:
-        """Run the full MintPy SBAS pipeline (all steps)."""
+        """Run the full MintPy SBAS pipeline (all steps), blocking until done."""
         if config_path is None:
             config_path = self.work_dir / "smallbaselineApp.cfg"
 
@@ -80,3 +79,29 @@ class MintPyAdapter:
             "--work-dir", str(self.work_dir),
         ]
         return subprocess.run(cmd, check=False)
+
+    def start_full_pipeline(
+        self,
+        config_path: Optional[Path] = None,
+        log_path: Optional[Path] = None,
+    ) -> subprocess.Popen:
+        """Start the full MintPy SBAS pipeline without blocking.
+
+        Stdout/stderr are redirected to `log_path` (default: work_dir/mintpy.log)
+        so a caller can tail progress while the process runs, and can call
+        .terminate()/.poll() on the returned Popen to cancel or check completion.
+        This can run for a long time (minutes to hours depending on stack size),
+        which is why it is not simply wrapped in subprocess.run.
+        """
+        if config_path is None:
+            config_path = self.work_dir / "smallbaselineApp.cfg"
+        if log_path is None:
+            log_path = self.work_dir / "mintpy.log"
+
+        cmd = [
+            "smallbaselineApp.py",
+            str(config_path),
+            "--work-dir", str(self.work_dir),
+        ]
+        log_handle = log_path.open("w", encoding="utf-8")
+        return subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT)

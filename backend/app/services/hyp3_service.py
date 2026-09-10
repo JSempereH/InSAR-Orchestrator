@@ -17,14 +17,14 @@ def _get_earthdata_creds(db: Session) -> tuple[Optional[str], Optional[str]]:
         return None, None
     try:
         return row.username, decrypt(row.encrypted_password)
-    except InvalidToken:
+    except InvalidToken as exc:
         raise HTTPException(
             status_code=422,
             detail=(
                 "Stored credentials could not be decrypted. The SECRET_KEY has changed "
                 "since they were saved. Please re-enter your Earthdata credentials in Settings."
             ),
-        )
+        ) from exc
 
 
 def get_hyp3_adapter(db: Session) -> HyP3Adapter:

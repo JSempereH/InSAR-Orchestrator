@@ -1,0 +1,29 @@
+# Runs the backend + frontend in containers. An alternative to `make dev`
+# (bare venvs) for a more reproducible, restart-safe deployment.
+#
+# Usage:
+#   cp backend/.env.example backend/.env   # fill in SECRET_KEY
+#   docker compose up --build
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    volumes:
+      - insar-backend-data:/data
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  insar-backend-data:
