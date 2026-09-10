@@ -1,5 +1,7 @@
 import logging
 from datetime import date
+from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -7,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Batch, Job, JobStatus, Project
 from app.schemas import BatchOut, BatchPlanOut, JobOut, SubmitBatchRequest
-from app.services import download_state
+from app.services import batch_submission, download_state
 from app.services.hyp3_service import get_hyp3_adapter
 from insar_core.adapters.asf import ASFAdapter
 from insar_core.models.scene import AOI, SearchParams
@@ -44,6 +46,54 @@ def _existing_pairs(project: Project) -> set[tuple[str, str]]:
     }
 
 
+# Rough fallback when a project has no downloaded jobs yet to measure from -
+# observed average size of a HyP3 INSAR_GAMMA product bundle.
+_DEFAULT_JOB_SIZE_GB = 0.28
+
+
+def _estimate_batch_size_gb(db: Session, project: Project, pair_count: int) -> Optional[float]:
+    """Estimate total download size for `pair_count` new jobs, based on the
+    average size of this project's already-downloaded jobs (or a flat
+    fallback if it doesn't have any yet).
+
+    HyP3Adapter.download() has no per-job subfolder - every job in a project
+    lands flat in the same directory (project.storage_path). So the only way
+    to get a per-job average is: size of that shared folder's *top-level
+    files* (excluding the slc/ subfolder, which is unrelated raw SLC data),
+    divided by how many jobs share it - not the folder's size on its own.
+    """
+    if pair_count <= 0:
+        return None
+
+    downloaded = (
+        db.query(Job)
+        .join(Batch, Batch.id == Job.batch_id)
+        .filter(Batch.project_id == project.id, Job.downloaded == 1, Job.download_path.isnot(None))
+        .all()
+    )
+    if not downloaded:
+        return round(_DEFAULT_JOB_SIZE_GB * pair_count, 1)
+
+    jobs_per_folder: dict[str, int] = {}
+    for job in downloaded:
+        jobs_per_folder[job.download_path] = jobs_per_folder.get(job.download_path, 0) + 1
+
+    total_bytes = 0
+    total_jobs = 0
+    for folder, job_count in jobs_per_folder.items():
+        path = Path(folder)
+        if not path.is_dir():
+            continue
+        total_bytes += sum(f.stat().st_size for f in path.iterdir() if f.is_file())
+        total_jobs += job_count
+
+    if total_jobs == 0:
+        return round(_DEFAULT_JOB_SIZE_GB * pair_count, 1)
+
+    avg_gb = (total_bytes / 1e9) / total_jobs
+    return round(avg_gb * pair_count, 1)
+
+
 @router.post("/{project_id}/batches/plan", response_model=BatchPlanOut)
 def plan_batch(
     project_id: str,
@@ -64,6 +114,7 @@ def plan_batch(
         total_pairs=plan.total_pairs,
         scene_count=plan.scene_count,
         pairs_preview=[[r, s] for r, s in plan.pairs_preview],
+        estimated_size_gb=_estimate_batch_size_gb(db, project, plan.total_pairs),
     )
 
 
@@ -81,38 +132,31 @@ def submit_batch(
         raise HTTPException(400, "Set dry_run=false to actually submit")
 
     exclude = _existing_pairs(project)
-    submitted = _get_orchestrator(db).submit_batch(
+    pairs = _get_orchestrator(db).build_pairs(
         params=_project_search_params(project),
         max_temporal_neighbors=body.max_temporal_neighbors,
-        job_name=f"insar-{project.name[:20]}",
         exclude_pairs=exclude or None,
     )
 
-    if not submitted:
+    if not pairs:
         raise HTTPException(400, "All pairs for this project have already been submitted.")
 
+    # Create the batch now, before submitting a single pair, so it's visible
+    # in the UI immediately. Submission to HyP3 (one HTTP call per pair) runs
+    # in the background and fills in Job rows as it goes; see batch_submission.
     batch = Batch(
         project_id=project_id,
         label=body.label or f"Batch {len(project.batches) + 1}",
-        total_pairs=len(submitted),
+        total_pairs=len(pairs),
+        status="submitting",
+        auto_download=body.auto_download,
     )
     db.add(batch)
-    db.flush()
-
-    for s in submitted:
-        db.add(Job(
-            batch_id=batch.id,
-            hyp3_job_id=s.hyp3_job_id,
-            reference_granule=s.reference_granule,
-            secondary_granule=s.secondary_granule,
-            reference_date=s.reference_date.isoformat() if s.reference_date else None,
-            secondary_date=s.secondary_date.isoformat() if s.secondary_date else None,
-            status=JobStatus(s.status.value),
-            submitted_at=s.submitted_at,
-        ))
-
     db.commit()
     db.refresh(batch)
+
+    batch_submission.start(batch.id, pairs, job_name=f"insar-{project.name[:20]}")
+
     return batch
 
 
