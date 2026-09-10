@@ -32,3 +32,29 @@ def get_hyp3_adapter(db: Session) -> HyP3Adapter:
     return HyP3Adapter(username=username, password=password)
 
 
+def get_earthdata_credentials(db: Session) -> tuple[str, str]:
+    """Resolve Earthdata credentials: DB (Settings UI) first, then env vars/~/.netrc.
+
+    Unlike get_hyp3_adapter(), this raises if nothing is found - direct ASF
+    data-pool downloads need real credentials, they can't silently proceed
+    without them the way hyp3_sdk does when given None.
+    """
+    username, password = _get_earthdata_creds(db)
+    if username and password:
+        return username, password
+
+    from insar_core.credentials import load_earthdata_credentials
+
+    try:
+        creds = load_earthdata_credentials()
+        return creds.username, creds.password
+    except EnvironmentError:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Earthdata credentials not found. Configure them in Settings, "
+                "or set EARTHDATA_USER/EARTHDATA_PASS, or add them to ~/.netrc."
+            ),
+        )
+
+
