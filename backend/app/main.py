@@ -16,8 +16,8 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import Base, engine, SessionLocal
+from app.routers import batches, credentials, egms, jobs, mintpy, projects, scenes, slc, storage
 from app.models import Batch
-from app.routers import batches, credentials, egms, jobs, mintpy, projects, scenes, storage
 from app.services import credits_service
 from app.services.polling_service import poll_active_jobs, force_poll
 from app.services import download_queue
@@ -36,6 +36,15 @@ def _migrate_schema() -> None:
         cols = {row[1] for row in conn.execute(text("PRAGMA table_info(projects)"))}
         if "storage_path" not in cols:
             conn.execute(text("ALTER TABLE projects ADD COLUMN storage_path VARCHAR"))
+            conn.commit()
+
+        batch_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(batches)"))}
+        if "status" not in batch_cols:
+            # Existing batches already finished submitting by definition.
+            conn.execute(text("ALTER TABLE batches ADD COLUMN status VARCHAR DEFAULT 'done' NOT NULL"))
+            conn.commit()
+        if "auto_download" not in batch_cols:
+            conn.execute(text("ALTER TABLE batches ADD COLUMN auto_download BOOLEAN DEFAULT 0 NOT NULL"))
             conn.commit()
 
 
@@ -67,6 +76,7 @@ app.include_router(credentials.router)
 app.include_router(jobs.router)
 app.include_router(storage.router)
 app.include_router(egms.router)
+app.include_router(slc.router)
 app.include_router(mintpy.router)
 
 

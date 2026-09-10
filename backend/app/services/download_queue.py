@@ -46,6 +46,35 @@ def start(jobs: list[dict]) -> None:
             _worker.start()
 
 
+def enqueue(jobs: list[dict]) -> None:
+    """Append `jobs` to the pending queue, unlike start() this never clobbers
+    what's already queued (or being downloaded). Used by auto-download, which
+    discovers newly-succeeded jobs a few at a time across poll cycles.
+
+    Each item: {"job_id": str, "hyp3_job_id": str}
+    """
+    global _pending, _cancelled, _worker, _total_in_session
+
+    if not jobs:
+        return
+
+    with _lock:
+        known_ids = {j["job_id"] for j in _pending}
+        if _current_job_id:
+            known_ids.add(_current_job_id)
+        new_jobs = [j for j in jobs if j["job_id"] not in known_ids]
+        if not new_jobs:
+            return
+
+        _cancelled = False
+        _pending.extend(new_jobs)
+        _total_in_session += len(new_jobs)
+
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_run, daemon=True)
+            _worker.start()
+
+
 def cancel() -> None:
     """Clear pending queue. The current download finishes, then the worker stops."""
     global _cancelled
