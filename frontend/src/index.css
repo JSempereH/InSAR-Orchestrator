@@ -206,8 +206,8 @@ textarea.input { resize: vertical; min-height: 72px; }
   margin: 16px 0;
 }
 
-/* Page container */
-.page { padding: 28px 32px; max-width: 1100px; }
+/* Page container - centered, and widens with the viewport up to a readable cap */
+.page { padding: 28px 32px; max-width: 1400px; width: 100%; margin: 0 auto; box-sizing: border-box; }
 
 /* Step indicator */
 .steps { display: flex; align-items: center; gap: 0; margin-bottom: 28px; }
@@ -237,4 +237,9 @@ textarea.input { resize: vertical; min-height: 72px; }
 @keyframes pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%       { opacity: 0.4; transform: scale(0.75); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
