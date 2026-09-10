@@ -27,9 +27,13 @@ _EXCLUDED_MOUNT_PREFIXES = ("/boot", "/snap", "/dev")
 
 
 def list_storage_targets() -> list[dict]:
-    """Return the app default plus real, writable disks/partitions."""
+    """Return the app default plus real, writable disks/partitions.
+
+    The partition backing the app-default path is skipped from the second list.
+    """
     default_path = os.path.abspath(settings.downloads_dir)
     usage = psutil.disk_usage(default_path)
+    default_dev = os.stat(default_path).st_dev
     targets = [{
         "mountpoint": None,
         "device": "app-default",
@@ -46,6 +50,8 @@ def list_storage_targets() -> list[dict]:
             continue
         try:
             usage = psutil.disk_usage(part.mountpoint)
+            if os.stat(part.mountpoint).st_dev == default_dev:
+                continue
         except OSError:
             continue
         targets.append({
