@@ -54,6 +54,27 @@ class InSAROrchestrator:
             pairs_preview=preview,
         )
 
+    def build_pairs(
+        self,
+        params: SearchParams,
+        max_temporal_neighbors: int = 3,
+        exclude_pairs: Optional[set[tuple[str, str]]] = None,
+    ):
+        """Search scenes and build the SBAS pairs that submit_batch() would submit.
+
+        Exposed separately so callers can know the pair count (and thus create
+        a Batch record) before running the slower, network-bound submission loop.
+        """
+        scenes = self._scenes.search(params)
+        pairs = build_sbas_pairs(scenes, max_temporal_neighbors)
+
+        if exclude_pairs:
+            pairs = [
+                (ref, sec) for ref, sec in pairs
+                if (ref.granule_name, sec.granule_name) not in exclude_pairs
+            ]
+        return pairs
+
     def submit_batch(
         self,
         params: SearchParams,
@@ -67,14 +88,7 @@ class InSAROrchestrator:
         exclude_pairs: set of (reference_granule, secondary_granule) tuples to skip.
         Use this to avoid re-submitting pairs that already exist in the DB.
         """
-        scenes = self._scenes.search(params)
-        pairs = build_sbas_pairs(scenes, max_temporal_neighbors)
-
-        if exclude_pairs:
-            pairs = [
-                (ref, sec) for ref, sec in pairs
-                if (ref.granule_name, sec.granule_name) not in exclude_pairs
-            ]
+        pairs = self.build_pairs(params, max_temporal_neighbors, exclude_pairs)
 
         jobs: List[SubmittedJob] = []
         failed: List[tuple] = []
