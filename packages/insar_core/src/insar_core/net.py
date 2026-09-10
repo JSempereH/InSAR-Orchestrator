@@ -12,6 +12,7 @@ def stream_download(
     dest: Path,
     *,
     headers: Optional[dict] = None,
+    session: Optional[requests.Session] = None,
     file_index: int = 1,
     file_count: int = 1,
     progress_cb: Optional[Callable[..., None]] = None,
@@ -21,9 +22,14 @@ def stream_download(
 
     progress_cb receives keyword args: file_index, file_count, filename,
     total_bytes, downloaded_bytes, speed_bps, eta_s.
+
+    Pass `session` (e.g. an authenticated requests.Session) when the URL
+    requires auth beyond plain headers - e.g. ASF's data pool, which needs
+    an Earthdata-authenticated session to follow its redirect chain.
     """
     CHUNK = 1024 * 1024  # 1 MB
-    with requests.get(url, headers=headers, stream=True, timeout=timeout) as r:
+    requester = session if session is not None else requests
+    with requester.get(url, headers=headers, stream=True, timeout=timeout) as r:
         r.raise_for_status()
         total = int(r.headers.get("content-length", 0))
         downloaded = 0

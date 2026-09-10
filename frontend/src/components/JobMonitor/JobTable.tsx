@@ -10,30 +10,34 @@ const BADGE: Record<string, string> = {
 };
 
 const REFETCH_INTERVAL = 15_000;
+const SUBMITTING_REFETCH_INTERVAL = 2_000;
 
 interface JobTableProps {
   projectId: string;
   batchId: string;
   queueState: QueueState | null;
+  totalPairs?: number;
+  submitting?: boolean;
 }
 
-export function JobTable({ projectId, batchId, queueState }: JobTableProps) {
+export function JobTable({ projectId, batchId, queueState, totalPairs, submitting }: JobTableProps) {
   const qc = useQueryClient();
-  const [countdown, setCountdown] = useState(REFETCH_INTERVAL / 1000);
+  const interval = submitting ? SUBMITTING_REFETCH_INTERVAL : REFETCH_INTERVAL;
+  const [countdown, setCountdown] = useState(interval / 1000);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const allCheckRef = useRef<HTMLInputElement>(null);
 
   const { data: jobs = [], dataUpdatedAt, isFetching } = useQuery({
     queryKey: ["jobs", batchId],
     queryFn: () => jobsApi.listJobs(projectId, batchId),
-    refetchInterval: REFETCH_INTERVAL,
+    refetchInterval: interval,
   });
 
   useEffect(() => {
-    setCountdown(REFETCH_INTERVAL / 1000);
-    const id = setInterval(() => setCountdown((c) => (c <= 1 ? REFETCH_INTERVAL / 1000 : c - 1)), 1000);
+    setCountdown(interval / 1000);
+    const id = setInterval(() => setCountdown((c) => (c <= 1 ? interval / 1000 : c - 1)), 1000);
     return () => clearInterval(id);
-  }, [dataUpdatedAt]);
+  }, [dataUpdatedAt, interval]);
 
   // Refresh downloaded status when a queue job completes
   const prevDone = useRef<number | undefined>(undefined);
@@ -97,6 +101,20 @@ export function JobTable({ projectId, batchId, queueState }: JobTableProps) {
 
   return (
     <div>
+      {submitting && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, marginBottom: 10,
+          padding: "8px 12px", background: "var(--warning-light)", borderRadius: "var(--radius)",
+          fontSize: 12, color: "var(--warning)", fontWeight: 500,
+        }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: "50%", background: "var(--warning)",
+            animation: "pulse 1.2s ease-in-out infinite", flexShrink: 0,
+          }} />
+          Submitting to HyP3… {jobs.length} / {totalPairs ?? "?"} pairs sent so far
+        </div>
+      )}
+
       {/* Stats + refresh indicator */}
       <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
         <div style={{ display: "flex", gap: 10, fontSize: 12, flexWrap: "wrap" }}>

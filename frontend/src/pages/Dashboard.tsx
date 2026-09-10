@@ -1,13 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
-  adminApi, downloadQueueApi, jobsApi, projectsApi,
+  adminApi, batchesApi, downloadQueueApi, jobsApi, projectsApi,
   Batch, Project, QueueState,
 } from "../api/client";
 import { JobTable } from "../components/JobMonitor/JobTable";
 import { CreditsWidget } from "../components/JobMonitor/CreditsWidget";
 import { MintPyPanel } from "../components/JobMonitor/MintPyPanel";
 import { NewProjectWizard } from "../components/ProjectWizard/NewProjectWizard";
+import { SLCPanel } from "../components/SLC/SLCPanel";
 
 export function DashboardPage() {
   const qc = useQueryClient();
@@ -15,6 +16,7 @@ export function DashboardPage() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
   const [creatingProject, setCreatingProject] = useState(false);
+  const [autoDownload, setAutoDownload] = useState(false);
 
   const deleteMut = useMutation({
     mutationFn: projectsApi.delete,
@@ -47,6 +49,9 @@ export function DashboardPage() {
     queryKey: ["batches", activeProjectId],
     queryFn: () => projectsApi.batches(activeProjectId!),
     enabled: !!activeProjectId,
+    // Poll quickly while a batch is still being submitted, so its status
+    // flips to "done" (and jobs fill in) without the user refreshing.
+    refetchInterval: (query) => (query.state.data?.some((b) => b.status === "submitting") ? 2000 : false),
   });
 
   useEffect(() => {
@@ -62,16 +67,24 @@ export function DashboardPage() {
   const submitMut = useMutation({
     mutationFn: async (projectId: string) => {
       const plan = await jobsApi.plan(projectId, { dry_run: true, max_temporal_neighbors: activeProject?.max_temporal_neighbors ?? 3 });
-      if (!confirm(`Submit ${plan.total_pairs} pairs to HyP3?\nThis will consume HyP3 processing credits.`)) throw new Error("cancelled");
+      const sizeNote = plan.estimated_size_gb != null ? `\n≈ ${plan.estimated_size_gb} GB estimated once downloaded.` : "";
+      if (!confirm(`Submit ${plan.total_pairs} pairs to HyP3?\nThis will consume HyP3 processing credits.${sizeNote}`)) throw new Error("cancelled");
       return jobsApi.submit(projectId, {
         dry_run: false,
         max_temporal_neighbors: activeProject?.max_temporal_neighbors ?? 3,
+        auto_download: autoDownload,
       });
     },
     onSuccess: (batch) => {
       refetchBatches();
       setExpandedBatchIds((prev) => new Set([...prev, batch.id]));
     },
+  });
+
+  const autoDownloadMut = useMutation({
+    mutationFn: ({ batchId, value }: { batchId: string; value: boolean }) =>
+      batchesApi.setAutoDownload(batchId, value),
+    onSuccess: () => refetchBatches(),
   });
 
   // When queue finishes a job, refresh job list so downloaded status updates
@@ -207,6 +220,18 @@ export function DashboardPage() {
                     Track {activeProject.track_number} · {activeProject.flight_direction} · {activeProject.date_start} → {activeProject.date_end}
                   </div>
                 </div>
+                <label
+                  title="Automatically queue each track for download as soon as HyP3 finishes processing it"
+                  style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={autoDownload}
+                    onChange={(e) => setAutoDownload(e.target.checked)}
+                    style={{ cursor: "pointer" }}
+                  />
+                  Auto-download when done
+                </label>
                 <button
                   className="btn btn-primary"
                   disabled={submitMut.isPending}
@@ -236,8 +261,11 @@ export function DashboardPage() {
                   expanded={expandedBatchIds.has(b.id)}
                   queueState={queueState ?? null}
                   onToggle={() => toggleBatch(b.id)}
+                  onAutoDownloadChange={(value) => autoDownloadMut.mutate({ batchId: b.id, value })}
                 />
               ))}
+
+              <SLCPanel projectId={activeProjectId!} />
 
               {!!batches?.length && <MintPyPanel projectId={activeProjectId!} />}
             </>
@@ -371,13 +399,14 @@ function DownloadSessionBanner({
 // ── BatchCard ────────────────────────────────────────────────────────────────
 
 function BatchCard({
-  batch, projectId, expanded, queueState, onToggle,
+  batch, projectId, expanded, queueState, onToggle, onAutoDownloadChange,
 }: {
   batch: Batch;
   projectId: string;
   expanded: boolean;
   queueState: QueueState | null;
   onToggle: () => void;
+  onAutoDownloadChange: (value: boolean) => void;
 }) {
   return (
     <div style={{ marginBottom: 12 }}>
@@ -392,11 +421,40 @@ function BatchCard({
         onClick={onToggle}
       >
         <div style={{ flex: 1 }}>
-          <div style={{ fontWeight: 500, fontSize: 13 }}>{batch.label || "Batch"}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontWeight: 500, fontSize: 13 }}>{batch.label || "Batch"}</span>
+            {batch.status === "submitting" && (
+              <span style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.03em",
+                color: "var(--warning)", background: "var(--warning-light)",
+                padding: "2px 8px", borderRadius: 20,
+              }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: "50%", background: "var(--warning)",
+                  animation: "pulse 1.2s ease-in-out infinite",
+                }} />
+                Launching…
+              </span>
+            )}
+          </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
             {batch.total_pairs} pairs · submitted {new Date(batch.created_at).toLocaleString()}
           </div>
         </div>
+        <label
+          title="Automatically queue each track for download as soon as HyP3 finishes processing it"
+          style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--text-muted)", cursor: "pointer" }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="checkbox"
+            checked={batch.auto_download}
+            onChange={(e) => onAutoDownloadChange(e.target.checked)}
+            style={{ cursor: "pointer" }}
+          />
+          Auto-download
+        </label>
         <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
           {expanded ? "▲ Hide" : "▼ Show jobs"}
         </span>
@@ -415,6 +473,8 @@ function BatchCard({
             projectId={projectId}
             batchId={batch.id}
             queueState={queueState}
+            totalPairs={batch.total_pairs}
+            submitting={batch.status === "submitting"}
           />
         </div>
       )}

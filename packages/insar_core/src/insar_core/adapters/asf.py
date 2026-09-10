@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from datetime import date, datetime
-from typing import List
+from pathlib import Path
+from typing import Callable, List, Optional
 
 import asf_search as asf
 from shapely import wkt as swkt
@@ -11,6 +12,7 @@ from shapely.validation import make_valid
 
 from insar_core.adapters.base import SceneSearchAdapter
 from insar_core.models.scene import SearchParams, SARScene, TrackSummary
+from insar_core.net import stream_download
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +72,8 @@ def _result_to_scene(r) -> SARScene:
         flight_direction=props.get("flightDirection", ""),
         polarization=props.get("polarization", ""),
         size_mb=props.get("bytes", 0) / 1e6 if props.get("bytes") else None,
+        download_url=props.get("url"),
+        file_name=props.get("fileName"),
     )
 
 
@@ -104,6 +108,32 @@ def _dominant_polarization(scenes: list) -> str | None:
 
 class ASFAdapter(SceneSearchAdapter):
     """Sentinel-1 scene discovery via the ASF metadata catalog (no auth required)."""
+
+    def download(
+        self,
+        download_url: str,
+        file_name: str,
+        destination: Path,
+        username: str,
+        password: str,
+        progress_cb: Optional[Callable[..., None]] = None,
+    ) -> Path:
+        """Download a raw SLC product from ASF's data pool.
+
+        `download_url` and `file_name` come from a SARScene returned by search()
+        (its download_url / file_name fields). Unlike submit_pair(), this is a
+        plain authenticated file transfer of the original Sentinel-1 product -
+        no HyP3 processing credits involved. Requires Earthdata credentials.
+        """
+        destination = Path(destination)
+        destination.mkdir(parents=True, exist_ok=True)
+        dest = destination / file_name
+
+        session = asf.ASFSession()
+        session.auth_with_creds(username, password)
+
+        stream_download(download_url, dest, session=session, progress_cb=progress_cb)
+        return dest
 
     def _raw_search(self, params: SearchParams) -> list:
         kwargs = dict(
