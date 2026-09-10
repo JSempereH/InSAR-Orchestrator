@@ -42,11 +42,29 @@ export interface StorageTarget {
   writable: boolean;
 }
 
+export interface PathUsage {
+  path: string;
+  used_gb: number;
+  free_gb: number;
+  total_gb: number;
+}
+
+export interface MoveState {
+  active: boolean;
+  status: "idle" | "running" | "done" | "error";
+  pct: number;
+  src: string | null;
+  dst: string | null;
+  error: string | null;
+}
+
 export interface Batch {
   id: string;
   project_id: string;
   label?: string;
   total_pairs: number;
+  status: "submitting" | "done";
+  auto_download: boolean;
   created_at: string;
 }
 
@@ -85,12 +103,24 @@ export interface Scene {
   flight_direction: string;
   polarization: string;
   size_mb?: number;
+  download_url?: string;
+  file_name?: string;
+  already_downloaded: boolean;
+}
+
+export interface SLCDownload {
+  id: string;
+  project_id: string;
+  destination_path: string;
+  filenames: string[];
+  created_at: string;
 }
 
 export interface BatchPlan {
   total_pairs: number;
   scene_count: number;
   pairs_preview: [string, string][];
+  estimated_size_gb?: number;
 }
 
 export interface DownloadProgress {
@@ -133,6 +163,17 @@ export interface EGMSSearchRequest {
   direction?: string;         // required for L2A/L2B
   product_type?: string;      // required for L3
   tile_id?: string;
+}
+
+export interface SLCQueueState {
+  active: boolean;
+  current_filename: string | null;
+  current_progress: DownloadProgress | null;
+  pending_count: number;
+  destination: string | null;
+  total: number;
+  done: number;
+  cancelled: boolean;
 }
 
 export interface EGMSQueueState {
@@ -179,6 +220,10 @@ export const projectsApi = {
     api.get<Batch[]>(`/api/projects/${id}/batches`).then((r) => r.data),
   downloadSummary: (id: string) =>
     api.get<ProjectDownloadSummary>(`/api/projects/${id}/download-summary`).then((r) => r.data),
+  moveStorage: (id: string, mountpoint: string | null) =>
+    api.post<MoveState>(`/api/projects/${id}/storage/move`, { mountpoint }).then((r) => r.data),
+  deleteDownloadData: (id: string) =>
+    api.delete<{ deleted_jobs: number; freed_gb: number }>(`/api/projects/${id}/download-data`).then((r) => r.data),
 };
 
 export const scenesApi = {
@@ -196,6 +241,21 @@ export const scenesApi = {
   }) => api.post<Scene[]>("/api/scenes/search", body).then((r) => r.data),
 };
 
+export const slcApi = {
+  scenes: (projectId: string) =>
+    api.get<Scene[]>(`/api/projects/${projectId}/slc/scenes`).then((r) => r.data),
+  queueDownload: (projectId: string, scenes: Scene[]) =>
+    api
+      .post<SLCDownload>(`/api/projects/${projectId}/slc/downloads/queue`, { scenes })
+      .then((r) => r.data),
+  getQueue: () => api.get<SLCQueueState>("/api/slc/downloads/queue").then((r) => r.data),
+  cancelQueue: () => api.delete("/api/slc/downloads/queue").then((r) => r.data),
+  listDownloads: (projectId: string) =>
+    api.get<SLCDownload[]>(`/api/projects/${projectId}/slc/downloads`).then((r) => r.data),
+  deleteDownload: (id: string, deleteFiles = false) =>
+    api.delete<{ deleted: boolean; freed_gb: number }>(`/api/slc/downloads/${id}`, { params: { delete_files: deleteFiles } }).then((r) => r.data),
+};
+
 export const jobsApi = {
   plan: (
     projectId: string,
@@ -210,6 +270,7 @@ export const jobsApi = {
       max_temporal_neighbors?: number;
       label?: string;
       dry_run: false;
+      auto_download?: boolean;
     }
   ) =>
     api
@@ -219,6 +280,11 @@ export const jobsApi = {
     api
       .get<Job[]>(`/api/projects/${projectId}/batches/${batchId}/jobs`)
       .then((r) => r.data),
+};
+
+export const batchesApi = {
+  setAutoDownload: (batchId: string, auto_download: boolean) =>
+    api.patch<Batch>(`/api/batches/${batchId}`, { auto_download }).then((r) => r.data),
 };
 
 export const adminApi = {
@@ -234,6 +300,9 @@ export const downloadQueueApi = {
 
 export const storageApi = {
   targets: () => api.get<StorageTarget[]>("/api/storage/targets").then((r) => r.data),
+  usage: (path: string) =>
+    api.get<PathUsage>("/api/storage/usage", { params: { path } }).then((r) => r.data),
+  moveState: () => api.get<MoveState>("/api/storage/move").then((r) => r.data),
 };
 
 export const egmsApi = {
@@ -246,7 +315,10 @@ export const egmsApi = {
   getQueue: () => api.get<EGMSQueueState>("/api/egms/downloads/queue").then((r) => r.data),
   cancelQueue: () => api.delete("/api/egms/downloads/queue").then((r) => r.data),
   listDownloads: () => api.get<EGMSDownloadRecord[]>("/api/egms/downloads").then((r) => r.data),
-  deleteDownload: (id: string) => api.delete(`/api/egms/downloads/${id}`).then((r) => r.data),
+  deleteDownload: (id: string, deleteFiles = false) =>
+    api.delete<{ deleted: boolean; freed_gb: number }>(`/api/egms/downloads/${id}`, { params: { delete_files: deleteFiles } }).then((r) => r.data),
+  moveDownload: (id: string, mountpoint: string | null) =>
+    api.post<MoveState>(`/api/egms/downloads/${id}/move`, { mountpoint }).then((r) => r.data),
   getPoints: (id: string) => api.get<GeoJSON.FeatureCollection>(`/api/egms/downloads/${id}/points`).then((r) => r.data),
 };
 
