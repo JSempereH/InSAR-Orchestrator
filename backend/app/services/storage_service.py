@@ -1,14 +1,21 @@
 """
 Disk discovery: lists mounted filesystems on the machine running the backend,
-so a project can be pinned to a specific disk (e.g. an external HDD) instead
-of the app's default downloads folder.
+so a project can be pinned to a specific disk (e.g. an external HDD, or a
+network share already mounted on the host) instead of the app's default
+downloads folder.
 """
 
+import logging
 import os
+import subprocess
+from pathlib import Path
+from typing import Optional
 
 import psutil
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 _EXCLUDED_FSTYPES = {
     "tmpfs", "devtmpfs", "overlay", "squashfs", "proc", "sysfs",
@@ -51,3 +58,39 @@ def list_storage_targets() -> list[dict]:
         })
 
     return targets
+
+
+def dir_size_bytes(path: Path, timeout: int = 30) -> int:
+    """Total size of everything under `path`. Uses `du` (fast even for huge
+    trees, including over network mounts) with a Python walk as fallback."""
+    try:
+        result = subprocess.run(
+            ["du", "-sb", str(path)],
+            capture_output=True, text=True, timeout=timeout, check=True,
+        )
+        return int(result.stdout.split()[0])
+    except (subprocess.SubprocessError, ValueError, IndexError, OSError):
+        logger.warning("du failed for %s, falling back to Python walk", path)
+        total = 0
+        for entry in path.rglob("*"):
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+        return total
+
+
+def path_usage(path: Path) -> Optional[dict]:
+    """Disk usage for `path`: how much it occupies plus free/total space on
+    its underlying filesystem. None if the path doesn't exist."""
+    if not path.exists():
+        return None
+    used = dir_size_bytes(path) if path.is_dir() else path.stat().st_size
+    disk = psutil.disk_usage(str(path))
+    return {
+        "path": str(path),
+        "used_gb": round(used / 1e9, 2),
+        "free_gb": round(disk.free / 1e9, 2),
+        "total_gb": round(disk.total / 1e9, 2),
+    }
