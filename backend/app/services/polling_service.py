@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from app.database import SessionLocal
 from app.models import Job, JobStatus
+from app.services import download_queue
 from app.services.hyp3_service import get_hyp3_adapter
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ def _refresh_jobs_sync() -> dict:
             return {"active": len(active), "updated": 0, "error": "bulk_fetch_failed"}
 
         updated = 0
+        to_auto_download: list[dict] = []
         for job in active:
             hyp3_job = hyp3_statuses.get(job.hyp3_job_id)
             if hyp3_job is None:
@@ -84,6 +86,8 @@ def _refresh_jobs_sync() -> dict:
                     logger.info(
                         "Job %s: %s → %s", job.hyp3_job_id, job.status.value, new_status.value
                     )
+                    if new_status == JobStatus.SUCCEEDED and job.batch and job.batch.auto_download:
+                        to_auto_download.append({"job_id": job.id, "hyp3_job_id": job.hyp3_job_id})
                     job.status = new_status
                     updated += 1
 
@@ -100,6 +104,11 @@ def _refresh_jobs_sync() -> dict:
                 db.rollback()
 
         db.commit()
+
+        if to_auto_download:
+            logger.info("Auto-download: queueing %d newly succeeded job(s)", len(to_auto_download))
+            download_queue.enqueue(to_auto_download)
+
         logger.info("Poll complete: %d/%d jobs updated", updated, len(active))
         return {"active": len(active), "updated": updated}
     finally:
