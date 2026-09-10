@@ -48,13 +48,13 @@ def get_earthdata_credentials(db: Session) -> tuple[str, str]:
     try:
         creds = load_earthdata_credentials()
         return creds.username, creds.password
-    except EnvironmentError:
+    except EnvironmentError as exc:
         raise HTTPException(
             status_code=400,
             detail=(
                 "Earthdata credentials not found. Configure them in Settings, "
                 "or set EARTHDATA_USER/EARTHDATA_PASS, or add them to ~/.netrc."
             ),
-        )
+        ) from exc
 
 

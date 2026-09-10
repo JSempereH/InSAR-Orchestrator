@@ -139,7 +139,7 @@ def move_download(download_id: str, body: MoveRequest, db: Session = Depends(get
     try:
         storage_move.start(f"egms:{download_id}", src, dst, on_complete)
     except RuntimeError as exc:
-        raise HTTPException(409, str(exc))
+        raise HTTPException(409, str(exc)) from exc
 
     return storage_move.get_current_state()
 

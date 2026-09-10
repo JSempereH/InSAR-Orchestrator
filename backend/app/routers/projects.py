@@ -153,7 +153,7 @@ def move_project_storage(project_id: str, body: schemas.MoveRequest, db: Session
     try:
         storage_move.start(f"project:{project_id}", src, dst, on_complete)
     except RuntimeError as exc:
-        raise HTTPException(409, str(exc))
+        raise HTTPException(409, str(exc)) from exc
 
     return storage_move.get_current_state()
 
