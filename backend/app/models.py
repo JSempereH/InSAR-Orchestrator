@@ -103,7 +103,9 @@ class Batch(Base):
     __tablename__ = "batches"
 
     id = Column(String, primary_key=True, default=gen_uuid)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=False)
+    # Indexed: filtered on directly by _existing_pairs and every other
+    # per-project batch/job lookup - SQLite doesn't auto-index FK columns.
+    project_id = Column(String, ForeignKey("projects.id"), nullable=False, index=True)
 
     label = Column(String, nullable=True)
     total_pairs = Column(Integer, default=0)
@@ -124,7 +126,7 @@ class Job(Base):
     __tablename__ = "jobs"
 
     id = Column(String, primary_key=True, default=gen_uuid)
-    batch_id = Column(String, ForeignKey("batches.id"), nullable=False)
+    batch_id = Column(String, ForeignKey("batches.id"), nullable=False, index=True)
 
     # HyP3's own job ID, used to query status and download results
     hyp3_job_id = Column(String, nullable=True, index=True)

@@ -86,14 +86,24 @@ def _run(move_id: str, src: Path, dst: Path, on_complete: Callable[[Path], None]
             shutil.rmtree(src) if src.is_dir() else src.unlink()
 
         download_state.update(move_id, status="done", pct=100)
-        on_complete(dst)
         logger.info("Move %s: %s -> %s complete", move_id, src, dst)
     except Exception as exc:
         logger.exception("Move %s failed", move_id)
         download_state.update(move_id, status="error", error=str(exc))
+        return
     finally:
         with _lock:
             _current_id = None
+
+    # Deliberately outside the try/except above: the move itself already
+    # succeeded and was reported "done" by this point, so a failure in the
+    # caller's own callback (e.g. a DB update) must not be reported as a
+    # failed move - that would leave the files relocated but the status (and
+    # any retry logic watching it) believing the move needs to happen again.
+    try:
+        on_complete(dst)
+    except Exception:
+        logger.exception("Move %s: on_complete callback failed after a successful move to %s", move_id, dst)
 
 
 def _copy_with_progress(src: Path, dst: Path, move_id: str, total_bytes: int) -> None:

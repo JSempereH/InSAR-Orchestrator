@@ -172,10 +172,18 @@ def delete_project_download_data(project_id: str, db: Session = Depends(get_db))
     freed_bytes = 0
     storage_path = Path(project.storage_path) if project.storage_path else None
     if storage_path and storage_path.exists():
+        # One dir_size_bytes() (which shells out to `du`) for the whole tree
+        # and, if present, one more for slc/ to subtract - not one per
+        # top-level entry, which used to mean a `du` subprocess per
+        # interferogram subfolder (hundreds, for a real project here).
+        slc_dir = storage_path / "slc"
+        freed_bytes = storage_service.dir_size_bytes(storage_path)
+        if slc_dir.exists():
+            freed_bytes -= storage_service.dir_size_bytes(slc_dir)
+
         for entry in storage_path.iterdir():
             if entry.name == "slc":
                 continue
-            freed_bytes += entry.stat().st_size if entry.is_file() else storage_service.dir_size_bytes(entry)
             shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
 
     jobs = (

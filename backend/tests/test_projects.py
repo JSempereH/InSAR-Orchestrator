@@ -1,4 +1,8 @@
 """Project CRUD not already covered by test_storage.py (create)."""
+from pathlib import Path
+
+from app.database import SessionLocal
+from app.models import Batch, Job, JobStatus
 
 
 def _project_payload(**overrides):
@@ -60,4 +64,57 @@ def test_download_summary_for_project_with_no_jobs(client):
 
 def test_download_summary_for_nonexistent_project_returns_404(client):
     resp = client.get("/api/projects/does-not-exist/download-summary")
+    assert resp.status_code == 404
+
+
+def test_delete_download_data_frees_space_but_keeps_slc_and_history(client):
+    project = client.post("/api/projects", json=_project_payload(name="Download Data Project")).json()
+    storage = Path(project["storage_path"])
+    storage.mkdir(parents=True, exist_ok=True)
+
+    scene_dir = storage / "S1AA_scene"
+    scene_dir.mkdir()
+    (scene_dir / "unw_phase.tif").write_bytes(b"0" * 1000)
+
+    slc_dir = storage / "slc"
+    slc_dir.mkdir()
+    (slc_dir / "raw.zip").write_bytes(b"0" * 500)
+
+    db = SessionLocal()
+    try:
+        batch = Batch(project_id=project["id"], label="b1", total_pairs=1, status="done")
+        db.add(batch)
+        db.commit()
+        db.refresh(batch)
+        job = Job(
+            batch_id=batch.id, reference_granule="ref", secondary_granule="sec",
+            status=JobStatus.SUCCEEDED, downloaded=1, download_path=str(scene_dir),
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    resp = client.delete(f"/api/projects/{project['id']}/download-data")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_jobs"] == 1
+    assert body["freed_gb"] == round(1000 / 1e9, 2)  # only the scene dir, not slc/
+
+    assert not scene_dir.exists()
+    assert slc_dir.exists()  # left alone
+    assert (slc_dir / "raw.zip").exists()
+
+    db = SessionLocal()
+    try:
+        refreshed = db.query(Job).filter_by(id=job_id).first()
+        assert refreshed.downloaded == 0
+        assert refreshed.download_path is None
+    finally:
+        db.close()
+
+
+def test_delete_download_data_for_nonexistent_project_returns_404(client):
+    resp = client.delete("/api/projects/does-not-exist/download-data")
     assert resp.status_code == 404
