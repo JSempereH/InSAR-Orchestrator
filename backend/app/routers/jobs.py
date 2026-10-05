@@ -10,8 +10,8 @@ from app.database import get_db
 from app.models import Batch, Job, JobStatus, Project
 from app.schemas import BatchOut, BatchPlanOut, JobOut, SubmitBatchRequest
 from app.services import batch_submission, download_state
+from app.services import asf_service
 from app.services.hyp3_service import get_hyp3_adapter
-from insar_core.adapters.asf import ASFAdapter
 from insar_core.models.scene import AOI, SearchParams
 from insar_core.pipeline.orchestrator import InSAROrchestrator
 
@@ -20,8 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 def _get_orchestrator(db: Session) -> InSAROrchestrator:
+    # Reuses the same ASFAdapter instance asf_service uses (rather than a
+    # fresh one per request) - it caches raw catalog searches internally, so
+    # sharing it lets that cache actually do something across requests.
     return InSAROrchestrator(
-        scene_adapter=ASFAdapter(),
+        scene_adapter=asf_service.get_adapter(),
         processor=get_hyp3_adapter(db),
     )
 
@@ -36,14 +39,19 @@ def _project_search_params(project: Project) -> SearchParams:
     )
 
 
-def _existing_pairs(project: Project) -> set[tuple[str, str]]:
-    """Granule pairs already in the DB for this project with a non-FAILED status."""
-    return {
-        (j.reference_granule, j.secondary_granule)
-        for b in project.batches
-        for j in b.jobs
-        if j.status != JobStatus.FAILED
-    }
+def _existing_pairs(db: Session, project: Project) -> set[tuple[str, str]]:
+    """Granule pairs already in the DB for this project with a non-FAILED status.
+
+    One query joined on Batch.project_id, rather than iterating
+    project.batches then each batch's .jobs (lazy relationships - that was
+    1 query per batch instead of 1 total)."""
+    rows = (
+        db.query(Job.reference_granule, Job.secondary_granule)
+        .join(Batch, Batch.id == Job.batch_id)
+        .filter(Batch.project_id == project.id, Job.status != JobStatus.FAILED)
+        .all()
+    )
+    return {(ref, sec) for ref, sec in rows}
 
 
 # Rough fallback when a project has no downloaded jobs yet to measure from -
@@ -104,7 +112,7 @@ def plan_batch(
     if not project:
         raise HTTPException(404, "Project not found")
 
-    exclude = _existing_pairs(project)
+    exclude = _existing_pairs(db, project)
     plan = _get_orchestrator(db).plan_batch(
         params=_project_search_params(project),
         max_temporal_neighbors=body.max_temporal_neighbors,
@@ -131,7 +139,7 @@ def submit_batch(
     if body.dry_run:
         raise HTTPException(400, "Set dry_run=false to actually submit")
 
-    exclude = _existing_pairs(project)
+    exclude = _existing_pairs(db, project)
     pairs = _get_orchestrator(db).build_pairs(
         params=_project_search_params(project),
         max_temporal_neighbors=body.max_temporal_neighbors,

@@ -6,7 +6,8 @@ Run with: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 import asyncio
 import logging
-from typing import Any
+import time
+from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -46,6 +47,13 @@ def _migrate_schema() -> None:
         if "auto_download" not in batch_cols:
             conn.execute(text("ALTER TABLE batches ADD COLUMN auto_download BOOLEAN DEFAULT 0 NOT NULL"))
             conn.commit()
+
+        # Column(index=True) only takes effect via create_all for a table
+        # that doesn't exist yet - these two were added to already-live
+        # tables, so the index needs creating explicitly here too.
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_batches_project_id ON batches (project_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_batch_id ON jobs (batch_id)"))
+        conn.commit()
 
 
 Base.metadata.create_all(bind=engine)
@@ -151,13 +159,6 @@ class _ConnectionManager:
         if ws in conns:
             conns.remove(ws)
 
-    async def broadcast(self, batch_id: str, data: Any):
-        for ws in list(self._connections.get(batch_id, [])):
-            try:
-                await ws.send_json(data)
-            except Exception:
-                self._connections[batch_id].remove(ws)
-
 
 manager = _ConnectionManager()
 
@@ -171,31 +172,51 @@ async def batch_status_ws(websocket: WebSocket, batch_id: str):
     """
     await manager.connect(batch_id, websocket)
     try:
-        db = SessionLocal()
-        try:
-            batch = db.query(Batch).filter_by(id=batch_id).first()
-            if not batch:
-                await websocket.send_json({"error": "Batch not found"})
-                return
-            await _send_snapshot(websocket, batch)
-        finally:
-            db.close()
+        snapshot = _fetch_batch_snapshot(batch_id)
+        if snapshot is None:
+            await websocket.send_json({"error": "Batch not found"})
+            return
+        await websocket.send_json(snapshot)
 
         while True:
             await asyncio.sleep(60)
-            db = SessionLocal()
-            try:
-                batch = db.query(Batch).filter_by(id=batch_id).first()
-                if batch:
-                    await _send_snapshot(websocket, batch)
-            finally:
-                db.close()
+            snapshot = _fetch_batch_snapshot(batch_id)
+            if snapshot is not None:
+                await websocket.send_json(snapshot)
 
     except WebSocketDisconnect:
         manager.disconnect(batch_id, websocket)
 
 
-async def _send_snapshot(ws: WebSocket, batch: Batch):
+# Every open socket queries on its own independent 60s timer, so N clients
+# watching the same batch_id used to mean N identical DB queries roughly
+# every 60s. Caching the query result for just under that interval means
+# whichever socket asks first (per batch) does the real query, and every
+# other socket watching the same batch within that window reuses it.
+_SNAPSHOT_CACHE_TTL_S = 55.0
+_snapshot_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _fetch_batch_snapshot(batch_id: str) -> Optional[dict]:
+    cached = _snapshot_cache.get(batch_id)
+    now = time.monotonic()
+    if cached is not None and now - cached[0] < _SNAPSHOT_CACHE_TTL_S:
+        return cached[1]
+
+    db = SessionLocal()
+    try:
+        batch = db.query(Batch).filter_by(id=batch_id).first()
+        if not batch:
+            return None
+        snapshot = _batch_snapshot_dict(batch)
+    finally:
+        db.close()
+
+    _snapshot_cache[batch_id] = (now, snapshot)
+    return snapshot
+
+
+def _batch_snapshot_dict(batch: Batch) -> dict:
     jobs_data = [
         {
             "id": j.id,
@@ -207,4 +228,4 @@ async def _send_snapshot(ws: WebSocket, batch: Batch):
         }
         for j in batch.jobs
     ]
-    await ws.send_json({"batch_id": batch.id, "jobs": jobs_data})
+    return {"batch_id": batch.id, "jobs": jobs_data}

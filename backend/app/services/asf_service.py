@@ -9,6 +9,13 @@ from insar_core.models.scene import AOI, SearchParams, SARScene, TrackSummary
 _adapter = ASFAdapter()
 
 
+def get_adapter() -> ASFAdapter:
+    """The shared ASFAdapter instance - reuse this rather than constructing
+    a new one, since it caches raw catalog search results internally (see
+    ASFAdapter._raw_search) and a fresh instance would never hit that cache."""
+    return _adapter
+
+
 def search_scenes(
     geometry: dict,
     date_start: str,
