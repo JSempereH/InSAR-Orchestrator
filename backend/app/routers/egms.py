@@ -13,7 +13,10 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.models import EGMSDownload
-from app.schemas import EGMSDownloadOut, EGMSDownloadRequest, EGMSProductOut, EGMSSearchRequest, MoveRequest, MoveStateOut
+from app.schemas import (
+    EGMSDownloadOut, EGMSDownloadRequest, EGMSProductOut, EGMSSearchRequest,
+    MoveRequest, MoveStateOut, TimeSeriesOut,
+)
 from app.services import egms_download_queue, egms_points, egms_service, storage_move
 
 router = APIRouter(prefix="/api/egms", tags=["egms"])
@@ -146,10 +149,31 @@ def move_download(download_id: str, body: MoveRequest, db: Session = Depends(get
 
 @router.get("/downloads/{download_id}/points")
 def get_download_points(download_id: str, db: Session = Depends(get_db)):
-    """Parse the downloaded L3 files into GeoJSON points (velocity per point)."""
+    """Parse the downloaded files into GeoJSON points (velocity per point).
+
+    Works for L3 (velocity-only) as well as L2A/L2B, since their CSV rows
+    carry latitude/longitude/mean_velocity too - the point map is how a user
+    finds a point to then request its time series from the endpoint below."""
     row = db.query(EGMSDownload).filter_by(id=download_id).first()
     if not row:
         raise HTTPException(404, "Download not found")
-    if row.level != "L3":
-        raise HTTPException(400, "Point visualization is only available for L3 downloads")
-    return egms_points.extract_points(Path(row.destination_path), row.filenames)
+    if row.level not in ("L2A", "L2B", "L3"):
+        raise HTTPException(400, f"Unsupported level for point visualization: {row.level}")
+    return egms_points.extract_points(Path(row.destination_path), row.filenames, geometry=row.geometry)
+
+
+@router.get("/downloads/{download_id}/points/{point_id}/timeseries", response_model=TimeSeriesOut)
+def get_point_time_series(download_id: str, point_id: str, db: Session = Depends(get_db)):
+    """Displacement time series for one point, as plotted from GET .../points.
+    Only L2A/L2B carry a time series; L3 is a velocity mosaic with no per-date
+    columns to extract."""
+    row = db.query(EGMSDownload).filter_by(id=download_id).first()
+    if not row:
+        raise HTTPException(404, "Download not found")
+    if row.level not in ("L2A", "L2B"):
+        raise HTTPException(400, "Time series is only available for L2A/L2B downloads")
+
+    series = egms_points.extract_time_series(Path(row.destination_path), row.filenames, point_id, geometry=row.geometry)
+    if series is None:
+        raise HTTPException(404, "Point not found in downloaded files")
+    return series

@@ -9,6 +9,10 @@ dependencies = [
     "shapely>=2.0",
     "requests>=2.31",
     "pyjwt[crypto]>=2.8",
+    "h5py>=3.10",
+    "numpy>=1.24",
+    "pyproj>=3.5",
+    "GDAL==3.8.4",
 ]
 
 [build-system]

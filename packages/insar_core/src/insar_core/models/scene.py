@@ -11,10 +11,19 @@ class AOI:
     geometry: dict[str, Any]
 
     @property
-    def wkt(self) -> str:
+    def geometry_unwrapped(self) -> dict[str, Any]:
+        """`geometry`, unwrapped from a GeoJSON Feature if it's wrapped in
+        one - the drawn AOI a project stores can be either. Shared so every
+        adapter that needs the raw geometry (not just this class's own wkt
+        below) unwraps it the same way instead of reimplementing it."""
         geom = self.geometry
         if geom.get("type") == "Feature":
-            geom = geom["geometry"]
+            return geom["geometry"]
+        return geom
+
+    @property
+    def wkt(self) -> str:
+        geom = self.geometry_unwrapped
         if geom["type"] != "Polygon":
             raise ValueError(f"Only Polygon geometry is supported, got {geom['type']}")
         coords = geom["coordinates"][0]
