@@ -7,21 +7,15 @@ replaces the pending items (the item currently downloading is not interrupted).
 from __future__ import annotations
 
 import logging
-import threading
 from pathlib import Path
 from typing import Optional
 
 from app.services import download_state
+from app.services.sequential_queue import SequentialQueue
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
-_pending: list[dict] = []        # [{job_id, hyp3_job_id}, ...]
-_current_job_id: Optional[str] = None
-_total_in_session: int = 0
-_done_in_session: int = 0
-_cancelled: bool = False
-_worker: Optional[threading.Thread] = None
+_queue = SequentialQueue(name="HyP3", item_key=lambda item: item["job_id"])
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -32,18 +26,7 @@ def start(jobs: list[dict]) -> None:
     Each item: {"job_id": str, "hyp3_job_id": str}
     Currently-downloading job (if any) is not interrupted.
     """
-    global _pending, _cancelled, _worker, _total_in_session, _done_in_session
-
-    with _lock:
-        _cancelled = False
-        already_done = _done_in_session if _current_job_id else 0
-        _pending = list(jobs)
-        _total_in_session = already_done + (1 if _current_job_id else 0) + len(jobs)
-        _done_in_session = already_done
-
-        if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_run, daemon=True)
-            _worker.start()
+    _queue.start(jobs, _download_one)
 
 
 def enqueue(jobs: list[dict]) -> None:
@@ -53,87 +36,31 @@ def enqueue(jobs: list[dict]) -> None:
 
     Each item: {"job_id": str, "hyp3_job_id": str}
     """
-    global _pending, _cancelled, _worker, _total_in_session
-
-    if not jobs:
-        return
-
-    with _lock:
-        known_ids = {j["job_id"] for j in _pending}
-        if _current_job_id:
-            known_ids.add(_current_job_id)
-        new_jobs = [j for j in jobs if j["job_id"] not in known_ids]
-        if not new_jobs:
-            return
-
-        _cancelled = False
-        _pending.extend(new_jobs)
-        _total_in_session += len(new_jobs)
-
-        if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_run, daemon=True)
-            _worker.start()
+    _queue.enqueue(jobs, _download_one)
 
 
 def cancel() -> None:
     """Clear pending queue. The current download finishes, then the worker stops."""
-    global _cancelled
-    with _lock:
-        _cancelled = True
-        _pending.clear()
+    _queue.cancel()
 
 
 def get_state() -> dict:
     """Return a snapshot of current queue state (thread-safe copy)."""
-    with _lock:
-        current = _current_job_id
-        pending = list(_pending)
-        total = _total_in_session
-        done = _done_in_session
-        cancelled = _cancelled
-
-    current_progress = download_state.get(current) if current else {}
-
+    raw = _queue.get_state()
+    current = raw["current_item"]
     return {
-        "active": current is not None or len(pending) > 0,
-        "current_job_id": current,
-        "current_progress": current_progress or None,
-        "pending_count": len(pending),
-        "pending_job_ids": pending,
-        "total": total,
-        "done": done,
-        "cancelled": cancelled,
+        "active": raw["active"],
+        "current_job_id": current["job_id"] if current else None,
+        "current_progress": raw["current_progress"],
+        "pending_count": raw["pending_count"],
+        "pending_job_ids": raw["pending_items"],
+        "total": raw["total"],
+        "done": raw["done"],
+        "cancelled": raw["cancelled"],
     }
 
 
-# ── Worker ─────────────────────────────────────────────────────────────────
-
-def _run() -> None:
-    global _current_job_id, _pending, _done_in_session
-
-    while True:
-        with _lock:
-            if _cancelled or not _pending:
-                _current_job_id = None
-                break
-            item = _pending.pop(0)
-            _current_job_id = item["job_id"]
-
-        job_id = item["job_id"]
-        hyp3_job_id = item["hyp3_job_id"]
-
-        logger.info("Queue: starting download for job %s", job_id)
-        download_state.update(job_id, status="running", pct=0, filename=None)
-
-        try:
-            _download_one(job_id, hyp3_job_id)
-        except Exception:
-            logger.exception("Queue: download failed for job %s", job_id)
-            download_state.update(job_id, status="error")
-
-        with _lock:
-            _done_in_session += 1
-
+# ── Item download ────────────────────────────────────────────────────────────
 
 def _resolve_destination(db, job_id: str) -> Optional[Path]:
     """Per-project storage destination, falling back to the app default."""
@@ -151,7 +78,10 @@ def _resolve_destination(db, job_id: str) -> Optional[Path]:
     return destination if destination.exists() else None
 
 
-def _download_one(job_id: str, hyp3_job_id: str) -> None:
+def _download_one(item: dict) -> None:
+    job_id = item["job_id"]
+    hyp3_job_id = item["hyp3_job_id"]
+
     # Import here to avoid circular imports at module load time
     from app.database import SessionLocal
     from app.models import Job
@@ -165,9 +95,11 @@ def _download_one(job_id: str, hyp3_job_id: str) -> None:
         db.close()
 
     if destination is None:
-        download_state.update(job_id, status="error", error="Storage destination not available")
-        logger.error("Queue: storage destination missing for job %s", job_id)
-        return
+        # Raise rather than setting status="error" here directly: the
+        # queue's own try/except (see SequentialQueue._run) is what reports
+        # a failed item's terminal state, for every queue uniformly - two
+        # places setting it would risk them disagreeing.
+        raise RuntimeError(f"Storage destination not available for job {job_id}")
 
     def on_progress(**kw):
         tb = kw.get("total_bytes", 0)
@@ -186,6 +118,3 @@ def _download_one(job_id: str, hyp3_job_id: str) -> None:
             db2.commit()
     finally:
         db2.close()
-
-    download_state.update(job_id, status="done", pct=100)
-    logger.info("Queue: completed download for job %s", job_id)

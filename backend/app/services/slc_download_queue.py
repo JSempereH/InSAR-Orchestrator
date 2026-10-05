@@ -1,30 +1,20 @@
 """SLC download queue: sequential background downloader for raw Sentinel-1 SLCs.
 
-Mirrors download_queue.py / egms_download_queue.py's single-worker design.
 Items are keyed by filename (there's no Job row for a raw SLC download - it's
 not tied to HyP3 processing at all, just a direct ASF data-pool transfer).
 """
 from __future__ import annotations
 
-import logging
-import threading
 from pathlib import Path
 from typing import Optional
 
 from app.services import download_state
+from app.services.sequential_queue import SequentialQueue
 
-logger = logging.getLogger(__name__)
-
-_lock = threading.Lock()
-_pending: list[dict] = []        # [{granule_name, file_name, download_url}, ...]
+_queue = SequentialQueue(name="SLC", item_key=lambda item: item["file_name"])
 _destination: Optional[Path] = None
 _username: Optional[str] = None
 _password: Optional[str] = None
-_current_filename: Optional[str] = None
-_total_in_session: int = 0
-_done_in_session: int = 0
-_cancelled: bool = False
-_worker: Optional[threading.Thread] = None
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -34,87 +24,35 @@ def start(username: str, password: str, scenes: list[dict], destination: Path) -
 
     Each item: {"granule_name": str, "file_name": str, "download_url": str}
     """
-    global _pending, _destination, _cancelled, _worker
-    global _total_in_session, _done_in_session, _username, _password
-
-    with _lock:
-        _username = username
-        _password = password
-        _destination = destination
-        _cancelled = False
-        already_done = _done_in_session if _current_filename else 0
-        _pending = list(scenes)
-        _total_in_session = already_done + (1 if _current_filename else 0) + len(scenes)
-        _done_in_session = already_done
-
-        if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_run, daemon=True)
-            _worker.start()
+    global _destination, _username, _password
+    _destination = destination
+    _username = username
+    _password = password
+    _queue.start(scenes, _download_one)
 
 
 def cancel() -> None:
-    global _cancelled
-    with _lock:
-        _cancelled = True
-        _pending.clear()
+    _queue.cancel()
 
 
 def get_state() -> dict:
-    with _lock:
-        current = _current_filename
-        pending = list(_pending)
-        total = _total_in_session
-        done = _done_in_session
-        cancelled = _cancelled
-        destination = _destination
-
-    current_progress = download_state.get(current) if current else {}
-
+    raw = _queue.get_state()
+    current = raw["current_item"]
     return {
-        "active": current is not None or len(pending) > 0,
-        "current_filename": current,
-        "current_progress": current_progress or None,
-        "pending_count": len(pending),
-        "destination": str(destination) if destination else None,
-        "total": total,
-        "done": done,
-        "cancelled": cancelled,
+        "active": raw["active"],
+        "current_filename": current["file_name"] if current else None,
+        "current_progress": raw["current_progress"],
+        "pending_count": raw["pending_count"],
+        "destination": str(_destination) if _destination else None,
+        "total": raw["total"],
+        "done": raw["done"],
+        "cancelled": raw["cancelled"],
     }
 
 
-# ── Worker ─────────────────────────────────────────────────────────────────
+# ── Item download ────────────────────────────────────────────────────────────
 
-def _run() -> None:
-    global _current_filename, _pending, _done_in_session
-
-    while True:
-        with _lock:
-            if _cancelled or not _pending:
-                _current_filename = None
-                break
-            item = _pending.pop(0)
-            _current_filename = item["file_name"]
-            destination = _destination
-            username = _username
-            password = _password
-
-        filename = item["file_name"]
-        logger.info("SLC queue: starting download for %s", filename)
-        download_state.update(filename, status="running", pct=0)
-
-        try:
-            _download_one(item, destination, username, password)
-            download_state.update(filename, status="done", pct=100)
-            logger.info("SLC queue: completed download for %s", filename)
-        except Exception:
-            logger.exception("SLC queue: download failed for %s", filename)
-            download_state.update(filename, status="error")
-
-        with _lock:
-            _done_in_session += 1
-
-
-def _download_one(item: dict, destination: Path, username: str, password: str) -> None:
+def _download_one(item: dict) -> None:
     from insar_core.adapters.asf import ASFAdapter
 
     def on_progress(**kw):
@@ -124,6 +62,6 @@ def _download_one(item: dict, destination: Path, username: str, password: str) -
         download_state.update(item["file_name"], status="running", pct=pct, **kw)
 
     ASFAdapter().download(
-        item["download_url"], item["file_name"], destination, username, password,
+        item["download_url"], item["file_name"], _destination, _username, _password,
         progress_cb=on_progress,
     )
