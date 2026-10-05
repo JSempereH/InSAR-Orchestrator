@@ -6,7 +6,19 @@ import { DownloadsPage } from "./pages/Downloads";
 import { SettingsPage } from "./pages/Settings";
 import "./App.css";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Without this, staleTime defaults to 0: every query refetches on
+      // every mount and window focus, even ones that already have their own
+      // explicit refetchInterval elsewhere for "this needs to be live."
+      // Most data here (projects, batches, credentials) doesn't change from
+      // second to second, so a short baseline avoids that redundant chatter
+      // without meaningfully delaying anything a user is actively waiting on.
+      staleTime: 10_000,
+    },
+  },
+});
 
 type Page = "dashboard" | "ground-motion" | "downloads" | "settings";
 

@@ -1,7 +1,11 @@
 import axios from "axios";
 
+// Override with VITE_API_URL (e.g. in a built/deployed environment where the
+// backend isn't on localhost); defaults to the local dev backend.
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+
 export const api = axios.create({
-  baseURL: "http://localhost:8000",
+  baseURL: API_BASE_URL,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -207,6 +211,12 @@ export interface ProjectDownloadSummary {
   downloaded_jobs: number;
 }
 
+// Shared shape returned by both the EGMS and MintPy time series endpoints.
+export interface TimeSeries {
+  dates: string[];
+  values_mm: number[];
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const projectsApi = {
@@ -232,13 +242,6 @@ export const scenesApi = {
     date_start: string;
     date_end: string;
   }) => api.post<TrackSummary[]>("/api/scenes/tracks", body).then((r) => r.data),
-  search: (body: {
-    geometry: GeoJSON.Geometry;
-    date_start: string;
-    date_end: string;
-    track_number?: number;
-    flight_direction?: string;
-  }) => api.post<Scene[]>("/api/scenes/search", body).then((r) => r.data),
 };
 
 export const slcApi = {
@@ -303,6 +306,13 @@ export const creditsApi = {
   refresh: () => api.post<CreditsSnapshot>("/api/admin/poll-credits").then((r) => r.data),
 };
 
+export interface DiskUsage {
+  zips_bytes: number;
+  extracted_bytes: number;
+  mintpy_output_bytes: number;
+  total_bytes: number;
+}
+
 export interface MintPyStatus {
   status: "NOT_STARTED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
   started_at?: string;
@@ -311,12 +321,17 @@ export interface MintPyStatus {
   error?: string | null;
   work_dir?: string;
   log_tail?: string;
+  disk_usage?: DiskUsage | null;
 }
 
 export const mintpyApi = {
   run: (projectId: string) => api.post<MintPyStatus>(`/api/projects/${projectId}/mintpy/run`).then((r) => r.data),
   status: (projectId: string) => api.get<MintPyStatus>(`/api/projects/${projectId}/mintpy/status`).then((r) => r.data),
   cancel: (projectId: string) => api.delete<MintPyStatus>(`/api/projects/${projectId}/mintpy`).then((r) => r.data),
+  getTimeSeries: (projectId: string, lat: number, lon: number) =>
+    api.get<TimeSeries>(`/api/projects/${projectId}/mintpy/timeseries`, { params: { lat, lon } }).then((r) => r.data),
+  getPoints: (projectId: string) =>
+    api.get<GeoJSON.FeatureCollection>(`/api/projects/${projectId}/mintpy/points`).then((r) => r.data),
 };
 
 export const downloadQueueApi = {
@@ -348,6 +363,8 @@ export const egmsApi = {
   moveDownload: (id: string, mountpoint: string | null) =>
     api.post<MoveState>(`/api/egms/downloads/${id}/move`, { mountpoint }).then((r) => r.data),
   getPoints: (id: string) => api.get<GeoJSON.FeatureCollection>(`/api/egms/downloads/${id}/points`).then((r) => r.data),
+  getTimeSeries: (id: string, pointId: string) =>
+    api.get<TimeSeries>(`/api/egms/downloads/${id}/points/${encodeURIComponent(pointId)}/timeseries`).then((r) => r.data),
 };
 
 export const credentialsApi = {
@@ -355,7 +372,4 @@ export const credentialsApi = {
     api
       .put("/api/credentials", { provider, username, password })
       .then((r) => r.data),
-  get: (provider: string) =>
-    api.get(`/api/credentials/${provider}`).then((r) => r.data),
-  delete: (provider: string) => api.delete(`/api/credentials/${provider}`),
 };

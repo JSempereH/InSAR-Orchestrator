@@ -29,6 +29,7 @@ interface DownloadsMapProps {
   points: GeoJSON.FeatureCollection | null;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
+  onPointClick?: (feature: GeoJSON.Feature) => void;
   height?: number;
 }
 
@@ -42,7 +43,7 @@ const VELOCITY_NEGATIVE = "#dc2626";
 const VELOCITY_NEUTRAL = "#94a3b8";
 const VELOCITY_POSITIVE = "#2563eb";
 
-export function DownloadsMap({ footprints, points, selectedId, onSelect, height = 480 }: DownloadsMapProps) {
+export function DownloadsMap({ footprints, points, selectedId, onSelect, onPointClick, height = 480 }: DownloadsMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const [ready, setReady] = useState(false);
@@ -87,10 +88,15 @@ export function DownloadsMap({ footprints, points, selectedId, onSelect, height 
         type: "circle",
         source: "velocity-points",
         paint: {
-          "circle-radius": 4,
+          // A dense EGMS tile can have tens of thousands of points spaced
+          // only ~15-20m apart. At a zoomed-out view a fixed radius makes
+          // them overlap into a solid, moire-like blob, so both radius and
+          // stroke shrink at low zoom and only appear as distinct dots once
+          // zoomed in enough for that overlap to clear up.
+          "circle-radius": ["interpolate", ["linear"], ["zoom"], 8, 1.5, 12, 3, 16, 6],
           "circle-color": VELOCITY_NEUTRAL,
           "circle-stroke-color": "#ffffff",
-          "circle-stroke-width": 1,
+          "circle-stroke-width": ["interpolate", ["linear"], ["zoom"], 8, 0, 12, 0.5, 16, 1],
         },
       });
 
@@ -98,12 +104,22 @@ export function DownloadsMap({ footprints, points, selectedId, onSelect, height 
         const id = e.features?.[0]?.properties?.id;
         if (id) onSelect(id);
       });
+      map.on("click", "velocity-points", (e) => {
+        const feature = e.features?.[0];
+        if (feature && onPointClick) onPointClick(feature);
+      });
       map.on("click", (e) => {
-        const hits = map.queryRenderedFeatures(e.point, { layers: ["footprints-fill"] });
+        // MapLibre fires this map-wide handler for every click, including
+        // ones already handled above by a layer-scoped listener - so it must
+        // check velocity-points too, or clicking a point immediately
+        // deselects the row that point belongs to.
+        const hits = map.queryRenderedFeatures(e.point, { layers: ["footprints-fill", "velocity-points"] });
         if (hits.length === 0) onSelect(null);
       });
       map.on("mouseenter", "footprints-fill", () => { map.getCanvas().style.cursor = "pointer"; });
       map.on("mouseleave", "footprints-fill", () => { map.getCanvas().style.cursor = ""; });
+      map.on("mouseenter", "velocity-points", () => { map.getCanvas().style.cursor = "pointer"; });
+      map.on("mouseleave", "velocity-points", () => { map.getCanvas().style.cursor = ""; });
 
       setReady(true);
     });
@@ -118,11 +134,7 @@ export function DownloadsMap({ footprints, points, selectedId, onSelect, height 
     const map = mapRef.current;
     if (!map || !ready) return;
 
-    const features: GeoJSON.Feature[] = footprints.map((f) => ({
-      type: "Feature",
-      geometry: f.geometry,
-      properties: { id: f.id, label: f.label, color: SOURCE_COLOR[f.source], selected: f.id === selectedId },
-    }));
+    const features = buildFootprintFeatures(footprints, selectedId);
     setGeoJSON(map, "footprints", features);
 
     const bounds = boundsOf(features.map((f) => f.geometry).concat(points ? points.features.map((f) => f.geometry) : []));
@@ -136,12 +148,7 @@ export function DownloadsMap({ footprints, points, selectedId, onSelect, height 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !ready) return;
-    const features: GeoJSON.Feature[] = footprints.map((f) => ({
-      type: "Feature",
-      geometry: f.geometry,
-      properties: { id: f.id, label: f.label, color: SOURCE_COLOR[f.source], selected: f.id === selectedId },
-    }));
-    setGeoJSON(map, "footprints", features);
+    setGeoJSON(map, "footprints", buildFootprintFeatures(footprints, selectedId));
 
     const selected = footprints.find((f) => f.id === selectedId);
     if (selected) {
@@ -180,7 +187,6 @@ export function DownloadsMap({ footprints, points, selectedId, onSelect, height 
 
     const bounds = boundsOf(points.features.map((f) => f.geometry));
     if (bounds) map.fitBounds(bounds, { padding: 40, maxZoom: 14, duration: 400 });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, points]);
 
   return (
@@ -218,6 +224,14 @@ export function DownloadsMap({ footprints, points, selectedId, onSelect, height 
 
 function fc(features: GeoJSON.Feature[]): GeoJSON.FeatureCollection {
   return { type: "FeatureCollection", features };
+}
+
+function buildFootprintFeatures(footprints: DownloadFootprint[], selectedId: string | null): GeoJSON.Feature[] {
+  return footprints.map((f) => ({
+    type: "Feature",
+    geometry: f.geometry,
+    properties: { id: f.id, label: f.label, color: SOURCE_COLOR[f.source], selected: f.id === selectedId },
+  }));
 }
 
 function setGeoJSON(map: maplibregl.Map, sourceId: string, features: GeoJSON.Feature[]) {

@@ -272,7 +272,13 @@ export function DashboardPage() {
 
               <SLCPanel projectId={activeProjectId!} />
 
-              {!!batches?.length && <MintPyPanel projectId={activeProjectId!} />}
+              {!!batches?.length && (
+                <MintPyPanel
+                  projectId={activeProjectId!}
+                  projectName={activeProject.name}
+                  geometry={activeProject.geometry}
+                />
+              )}
             </>
           )}
         </div>

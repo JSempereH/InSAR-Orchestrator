@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { projectsApi, storageApi, Scene, SLCDownload, SLCQueueState, slcApi } from "../../api/client";
+import { projectsApi, storageApi, Scene, SLCDownload, slcApi } from "../../api/client";
+import { DownloadQueueBanner } from "../DownloadQueueBanner";
 
 interface SLCPanelProps {
   projectId: string;
@@ -110,10 +111,12 @@ export function SLCPanel({ projectId }: SLCPanelProps) {
       {expanded && (
         <div style={{ padding: "0 16px 16px", borderTop: "1px solid var(--border)" }}>
           {queueState && queueState.active && (
-            <SLCDownloadBanner
+            <DownloadQueueBanner
+              title="Downloading SLCs"
               state={queueState}
               onCancel={() => cancelMut.mutate()}
               cancelling={cancelMut.isPending}
+              style={{ marginTop: 14 }}
             />
           )}
 
@@ -261,45 +264,3 @@ function SceneRow({ scene, checked, onToggle }: { scene: Scene; checked: boolean
   );
 }
 
-function SLCDownloadBanner({ state, onCancel, cancelling }: { state: SLCQueueState; onCancel: () => void; cancelling: boolean }) {
-  const p = state.current_progress;
-  const pct = p?.pct ?? 0;
-
-  return (
-    <div style={{
-      marginTop: 14, padding: "14px 18px",
-      background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
-      border: "1px solid rgba(34,197,94,0.3)", borderRadius: "var(--radius-lg)",
-    }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 6px #22c55e" }} />
-        <span style={{ fontWeight: 700, fontSize: 13, color: "#f1f5f9" }}>Downloading SLCs</span>
-        <span style={{ marginLeft: "auto", fontSize: 12, color: "#94a3b8", background: "rgba(255,255,255,0.06)", padding: "2px 10px", borderRadius: 20 }}>
-          {state.done} / {state.total} complete
-        </span>
-        <button className="btn btn-ghost btn-sm" disabled={cancelling} onClick={onCancel} style={{ fontSize: 11, color: "#f87171", borderColor: "rgba(248,113,113,0.3)" }}>
-          {cancelling ? "Cancelling…" : "× Cancel remaining"}
-        </button>
-      </div>
-
-      {state.current_filename && (
-        <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 4 }} title={state.current_filename}>
-          {state.current_filename}
-        </div>
-      )}
-
-      {state.destination && (
-        <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>
-          💾 {state.destination}
-        </div>
-      )}
-
-      <div style={{ height: 14, background: "rgba(255,255,255,0.05)", borderRadius: 8, overflow: "hidden", border: "1px solid rgba(34,197,94,0.2)" }}>
-        <div style={{
-          height: "100%", width: `${pct}%`, borderRadius: 8, transition: "width 0.3s ease",
-          background: "linear-gradient(90deg, #15803d, #22c55e)",
-        }} />
-      </div>
-    </div>
-  );
-}
