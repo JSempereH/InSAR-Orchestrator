@@ -8,4 +8,5 @@ websockets>=13.0
 cryptography>=43.0
 psutil>=6.0
 pyshp>=2.3
+polars>=1.44
 insar-core @ ../packages/insar_core

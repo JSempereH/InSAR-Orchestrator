@@ -19,6 +19,7 @@ from fastapi import Depends
 from app.config import settings
 from app.database import get_db
 from app.models import Project
+from app.schemas import TimeSeriesOut
 from app.services import mintpy_service
 
 router = APIRouter(prefix="/api/projects", tags=["mintpy"])
@@ -42,15 +43,15 @@ def run_mintpy(project_id: str, db: Session = Depends(get_db)):
     if not downloads_dir.exists():
         raise HTTPException(422, f"Storage destination does not exist: {downloads_dir}")
     try:
-        return mintpy_service.start_run(project_id, downloads_dir)
+        return mintpy_service.start_run(project_id, downloads_dir, geometry=project.geometry)
     except RuntimeError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/{project_id}/mintpy/status")
 def mintpy_status(project_id: str, db: Session = Depends(get_db)):
-    _project_or_404(db, project_id)
-    return mintpy_service.get_status(project_id)
+    project = _project_or_404(db, project_id)
+    return mintpy_service.get_status(project_id, _downloads_dir(project))
 
 
 @router.delete("/{project_id}/mintpy")
@@ -58,5 +59,26 @@ def cancel_mintpy(project_id: str, db: Session = Depends(get_db)):
     _project_or_404(db, project_id)
     try:
         return mintpy_service.cancel_run(project_id)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/{project_id}/mintpy/timeseries", response_model=TimeSeriesOut)
+def mintpy_time_series(project_id: str, lat: float, lon: float, db: Session = Depends(get_db)):
+    project = _project_or_404(db, project_id)
+    try:
+        return mintpy_service.get_time_series(_downloads_dir(project), lat, lon)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/{project_id}/mintpy/points")
+def mintpy_points(project_id: str, db: Session = Depends(get_db)):
+    """Decimated velocity points as GeoJSON, for the map a user clicks to
+    request a time series from the endpoint above - mirrors GET
+    /api/egms/downloads/{id}/points, but for MintPy's own SBAS grid."""
+    project = _project_or_404(db, project_id)
+    try:
+        return mintpy_service.get_points(_downloads_dir(project))
     except RuntimeError as exc:
         raise HTTPException(422, str(exc)) from exc

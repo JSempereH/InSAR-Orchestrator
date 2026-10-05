@@ -225,6 +225,16 @@ class EGMSDownloadOut(BaseModel):
         from_attributes = True
 
 
+# ---------- Time series (shared by EGMS and MintPy) ----------
+
+class TimeSeriesOut(BaseModel):
+    """One point's displacement history. Both the EGMS and MintPy time series
+    endpoints return this same shape so the frontend has a single chart
+    component instead of one per data source."""
+    dates: list[str]        # "YYYYMMDD"
+    values_mm: list[float]  # cumulative line-of-sight displacement, in mm
+
+
 # ---------- Downloads inventory (ASF/HyP3 side) ----------
 
 class ProjectDownloadSummaryOut(BaseModel):

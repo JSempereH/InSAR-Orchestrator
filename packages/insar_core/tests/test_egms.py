@@ -35,16 +35,21 @@ def _stub_jwt_encode(monkeypatch):
     monkeypatch.setattr("insar_core.adapters.egms.jwt.encode", lambda *a, **k: "signed-jwt")
 
 
-def _install_post(monkeypatch, calls, token_payload=None, search_payload=None):
-    def fake_post(url, **kwargs):
-        calls.append((url, kwargs))
+def _install_post(monkeypatch, calls, token_payload=None, search_payload=None, options_payload=None):
+    """Stubs request_with_retry (what egms.py now calls for every plain
+    JSON request - token exchange, search, list_options) rather than
+    requests.post/get directly, since the adapter no longer calls those."""
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
         if url == _TEST_KEY.token_uri:
             return _FakeResponse(token_payload or {"access_token": "tok-abc", "expires_in": 3600})
         if url == f"{API_BASE}/search":
             return _FakeResponse(search_payload or {"id": "q1", "hits": []})
-        raise AssertionError(f"Unexpected POST to {url}")
+        if method == "GET" and url.startswith(API_BASE):
+            return _FakeResponse(options_payload or [])
+        raise AssertionError(f"Unexpected {method} to {url}")
 
-    monkeypatch.setattr("insar_core.adapters.egms.requests.post", fake_post)
+    monkeypatch.setattr("insar_core.adapters.egms.request_with_retry", fake_request)
 
 
 def test_access_token_is_requested_via_jwt_bearer_and_cached(monkeypatch):
@@ -57,10 +62,11 @@ def test_access_token_is_requested_via_jwt_bearer_and_cached(monkeypatch):
 
     assert token1 == token2 == "tok-abc"
     # Only one token request despite two calls: caching works.
-    token_calls = [c for c in calls if c[0] == _TEST_KEY.token_uri]
+    token_calls = [c for c in calls if c[1] == _TEST_KEY.token_uri]
     assert len(token_calls) == 1
 
-    _, kwargs = token_calls[0]
+    method, _, kwargs = token_calls[0]
+    assert method == "POST"
     assert kwargs["data"]["grant_type"] == "urn:ietf:params:oauth:grant-type:jwt-bearer"
     assert kwargs["data"]["assertion"] == "signed-jwt"
 
@@ -83,9 +89,9 @@ def test_search_sends_aoi_level_and_release(monkeypatch):
     )
     products = adapter.search(params)
 
-    search_calls = [c for c in calls if c[0] == f"{API_BASE}/search"]
+    search_calls = [c for c in calls if c[1] == f"{API_BASE}/search"]
     assert len(search_calls) == 1
-    _, kwargs = search_calls[0]
+    _, _, kwargs = search_calls[0]
     body = kwargs["json"]
     assert body["levels"] == ["L3"]
     assert body["releases"] == ["2019-2023"]
@@ -108,7 +114,7 @@ def test_search_omits_optional_fields_when_not_set(monkeypatch):
 
     adapter.search(EGMSSearchParams(aoi=_aoi(), level="L2A", release="2019-2023"))
 
-    _, kwargs = [c for c in calls if c[0] == f"{API_BASE}/search"][0]
+    _, _, kwargs = [c for c in calls if c[1] == f"{API_BASE}/search"][0]
     body = kwargs["json"]
     assert "direction" not in body
     assert "productType" not in body
@@ -117,18 +123,15 @@ def test_search_omits_optional_fields_when_not_set(monkeypatch):
 
 def test_list_options_hits_the_right_endpoint(monkeypatch):
     calls = []
-    _install_post(monkeypatch, calls)
-
-    def fake_get(url, **kwargs):
-        calls.append((url, kwargs))
-        assert url == f"{API_BASE}/releases"
-        return _FakeResponse(["2015-2021", "2018-2022", "2019-2023"])
-
-    monkeypatch.setattr("insar_core.adapters.egms.requests.get", fake_get)
+    _install_post(monkeypatch, calls, options_payload=["2015-2021", "2018-2022", "2019-2023"])
     adapter = EGMSAdapter(_TEST_KEY)
 
     releases = adapter.list_options("releases")
     assert releases == ["2015-2021", "2018-2022", "2019-2023"]
+
+    get_calls = [c for c in calls if c[0] == "GET"]
+    assert len(get_calls) == 1
+    assert get_calls[0][1] == f"{API_BASE}/releases"
 
 
 def test_download_builds_url_with_filename_and_query_id(monkeypatch, tmp_path: Path):
