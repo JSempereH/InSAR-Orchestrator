@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta, timezone as tz
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -9,6 +12,12 @@ import hyp3_sdk
 from insar_core.adapters.base import ProcessorAdapter
 from insar_core.models.job import JobStatus, SubmittedJob
 from insar_core.net import stream_download
+
+# How many of a job's output files (HyP3 InSAR products typically ship
+# ~8-15: interferogram, coherence, DEM, look vectors, browse images, etc.)
+# to fetch at once. Downloads are network-bound, not CPU-bound, so a modest
+# amount of concurrency shortens wall-clock time without competing for CPU.
+_DOWNLOAD_CONCURRENCY = 4
 
 
 def _sdk_job_to_submitted(job) -> SubmittedJob:
@@ -22,7 +31,7 @@ def _sdk_job_to_submitted(job) -> SubmittedJob:
     ref = granules[0] if len(granules) > 0 else ""
     sec = granules[1] if len(granules) > 1 else ""
 
-    def _extract_date(granule: str) -> Optional[datetime]:
+    def _extract_date(granule: str) -> Optional[date]:
         # Sentinel-1 granule date is at chars 17-25: YYYYMMDD
         try:
             return datetime.strptime(granule[17:25], "%Y%m%d").date()
@@ -88,18 +97,67 @@ class HyP3Adapter(ProcessorAdapter):
         destination: Path,
         progress_cb: Callable[..., None] | None = None,
     ) -> List[Path]:
+        """Download every output file for `job_id`, up to `_DOWNLOAD_CONCURRENCY`
+        at a time (network-bound, not CPU-bound - a HyP3 InSAR product ships
+        as many separate files, and fetching them one at a time left most of
+        the available bandwidth unused).
+
+        `progress_cb` receives combined totals across every file currently in
+        flight (not one file's own totals), so the caller sees one coherent
+        overall progress figure instead of it resetting/jumping each time a
+        file finishes and the next one starts.
+        """
         destination = Path(destination)
         destination.mkdir(parents=True, exist_ok=True)
         job = self._client.get_job_by_id(job_id)
         files = job.files or []
-        paths: List[Path] = []
-        for idx, file_info in enumerate(files):
+        if not files:
+            return []
+
+        lock = threading.Lock()
+        downloaded_by_file: dict[int, int] = {}
+        total_by_file: dict[int, int] = {}
+        t0 = time.monotonic()
+
+        def make_file_cb(idx: int) -> Callable[..., None]:
+            def _cb(*, filename: str, total_bytes: int, downloaded_bytes: int, **_kw) -> None:
+                if progress_cb is None:
+                    return
+                with lock:
+                    downloaded_by_file[idx] = downloaded_bytes
+                    total_by_file[idx] = total_bytes
+                    total = sum(total_by_file.values())
+                    done = sum(downloaded_by_file.values())
+                    in_flight = len(downloaded_by_file)
+                elapsed = max(time.monotonic() - t0, 0.001)
+                speed = done / elapsed
+                eta = int((total - done) / speed) if speed and total else None
+                progress_cb(
+                    file_index=in_flight,
+                    file_count=len(files),
+                    filename=filename,
+                    total_bytes=total,
+                    downloaded_bytes=done,
+                    speed_bps=speed,
+                    eta_s=eta,
+                )
+            return _cb
+
+        def _download_one(idx: int, file_info: dict) -> tuple[int, Path]:
             url = file_info["url"]
             filename = file_info.get("filename") or url.split("/")[-1].split("?")[0]
             dest = destination / filename
-            stream_download(url, dest, file_index=idx + 1, file_count=len(files), progress_cb=progress_cb)
-            paths.append(dest)
-        return paths
+            stream_download(url, dest, file_index=idx + 1, file_count=len(files), progress_cb=make_file_cb(idx))
+            return idx, dest
+
+        paths: List[Optional[Path]] = [None] * len(files)
+        with ThreadPoolExecutor(max_workers=min(_DOWNLOAD_CONCURRENCY, len(files))) as executor:
+            futures = [executor.submit(_download_one, idx, f) for idx, f in enumerate(files)]
+            for future in as_completed(futures):
+                idx, dest = future.result()
+                paths[idx] = dest
+
+        return paths  # type: ignore[return-value]  # every slot is filled by the loop above
 
     def get_jobs_bulk(self, since: datetime | None = None) -> dict[str, "SubmittedJob"]:
         """Fetch all jobs submitted after `since` in one paginated API call.
@@ -107,7 +165,6 @@ class HyP3Adapter(ProcessorAdapter):
         Returns a dict keyed by hyp3_job_id. Used by the polling service to
         avoid N individual get_status() calls for large batches.
         """
-        from datetime import timedelta, timezone as tz
         if since is None:
             since = datetime.now(tz.utc) - timedelta(days=30)
         result: dict[str, SubmittedJob] = {}
