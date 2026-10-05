@@ -1,14 +1,12 @@
 """
 EGMS download queue: sequential background downloader for EGMS products.
 
-Mirrors download_queue.py's single-worker design, but items are keyed by
-product filename instead of a HyP3 Job id, since EGMS products aren't tied
-to a Job row - they're downloaded directly into a chosen folder.
+Items are keyed by product filename instead of a HyP3 Job id, since EGMS
+products aren't tied to a Job row - they're downloaded directly into a
+chosen folder.
 """
 from __future__ import annotations
 
-import logging
-import threading
 from pathlib import Path
 from typing import Optional
 
@@ -16,18 +14,11 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.services import download_state
+from app.services.sequential_queue import SequentialQueue
 
-logger = logging.getLogger(__name__)
-
-_lock = threading.Lock()
-_pending: list[dict] = []        # [{query_id, filename, level}, ...]
+_queue = SequentialQueue(name="EGMS", item_key=lambda item: item["filename"])
 _destination: Optional[Path] = None
 _adapter = None
-_current_filename: Optional[str] = None
-_total_in_session: int = 0
-_done_in_session: int = 0
-_cancelled: bool = False
-_worker: Optional[threading.Thread] = None
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -53,87 +44,37 @@ def start(db: Session, products: list[dict], destination: Path) -> None:
 
     Each item: {"query_id": str, "filename": str, "level": str}
     """
-    global _pending, _destination, _adapter, _cancelled, _worker
-    global _total_in_session, _done_in_session
+    global _destination, _adapter
 
     from app.services.egms_service import get_egms_adapter
 
-    with _lock:
-        _adapter = get_egms_adapter(db)
-        _destination = destination
-        _cancelled = False
-        already_done = _done_in_session if _current_filename else 0
-        _pending = list(products)
-        _total_in_session = already_done + (1 if _current_filename else 0) + len(products)
-        _done_in_session = already_done
-
-        if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_run, daemon=True)
-            _worker.start()
+    _destination = destination
+    _adapter = get_egms_adapter(db)
+    _queue.start(products, _download_one)
 
 
 def cancel() -> None:
-    global _cancelled
-    with _lock:
-        _cancelled = True
-        _pending.clear()
+    _queue.cancel()
 
 
 def get_state() -> dict:
-    with _lock:
-        current = _current_filename
-        pending = list(_pending)
-        total = _total_in_session
-        done = _done_in_session
-        cancelled = _cancelled
-        destination = _destination
-
-    current_progress = download_state.get(current) if current else {}
-
+    raw = _queue.get_state()
+    current = raw["current_item"]
     return {
-        "active": current is not None or len(pending) > 0,
-        "current_filename": current,
-        "current_progress": current_progress or None,
-        "pending_count": len(pending),
-        "destination": str(destination) if destination else None,
-        "total": total,
-        "done": done,
-        "cancelled": cancelled,
+        "active": raw["active"],
+        "current_filename": current["filename"] if current else None,
+        "current_progress": raw["current_progress"],
+        "pending_count": raw["pending_count"],
+        "destination": str(_destination) if _destination else None,
+        "total": raw["total"],
+        "done": raw["done"],
+        "cancelled": raw["cancelled"],
     }
 
 
-# ── Worker ─────────────────────────────────────────────────────────────────
+# ── Item download ────────────────────────────────────────────────────────────
 
-def _run() -> None:
-    global _current_filename, _pending, _done_in_session
-
-    while True:
-        with _lock:
-            if _cancelled or not _pending:
-                _current_filename = None
-                break
-            item = _pending.pop(0)
-            _current_filename = item["filename"]
-            destination = _destination
-            adapter = _adapter
-
-        filename = item["filename"]
-        logger.info("EGMS queue: starting download for %s", filename)
-        download_state.update(filename, status="running", pct=0)
-
-        try:
-            _download_one(adapter, item, destination)
-            download_state.update(filename, status="done", pct=100)
-            logger.info("EGMS queue: completed download for %s", filename)
-        except Exception:
-            logger.exception("EGMS queue: download failed for %s", filename)
-            download_state.update(filename, status="error")
-
-        with _lock:
-            _done_in_session += 1
-
-
-def _download_one(adapter, item: dict, destination: Path) -> None:
+def _download_one(item: dict) -> None:
     from insar_core.models.egms import EGMSProduct
 
     product = EGMSProduct(query_id=item["query_id"], filename=item["filename"], level=item.get("level", ""))
@@ -144,4 +85,4 @@ def _download_one(adapter, item: dict, destination: Path) -> None:
         pct = round(dl / tb * 100, 1) if tb else 0
         download_state.update(item["filename"], status="running", pct=pct, **kw)
 
-    adapter.download(product, destination, progress_cb=on_progress)
+    _adapter.download(product, _destination, progress_cb=on_progress)
