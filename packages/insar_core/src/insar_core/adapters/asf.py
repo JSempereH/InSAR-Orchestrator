@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
+import time
+from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -84,7 +85,6 @@ def _dominant_polarization(scenes: list) -> str | None:
     special campaigns). Mixing VV and HH scenes in one SBAS stack causes GAMMA to
     fail during interferogram formation.
     """
-    from collections import Counter
     counts: Counter = Counter()
     for s in scenes:
         pol = (s.polarization or "").upper()
@@ -106,8 +106,25 @@ def _dominant_polarization(scenes: list) -> str | None:
     return dominant[0]
 
 
+# How long a raw ASF catalog search result is reused for an identical query
+# before hitting the network again. Sentinel-1 acquisitions in the queried
+# date range are historical (already flown), so the catalog for a given AOI
+# essentially doesn't change minute to minute - this just absorbs the
+# duplicate queries a normal session naturally produces (reopening the track
+# picker, re-planning a batch after tweaking an unrelated field), not meant
+# to be a long-lived cache.
+_SEARCH_CACHE_TTL_S = 300
+
+# Safety cap so a long-running backend process reusing one ASFAdapter across
+# many different AOIs/date-ranges doesn't grow this cache unbounded.
+_SEARCH_CACHE_MAX_ENTRIES = 256
+
+
 class ASFAdapter(SceneSearchAdapter):
     """Sentinel-1 scene discovery via the ASF metadata catalog (no auth required)."""
+
+    def __init__(self) -> None:
+        self._search_cache: dict[tuple, tuple[float, list]] = {}
 
     def download(
         self,
@@ -149,7 +166,19 @@ class ASFAdapter(SceneSearchAdapter):
             direction = _FLIGHT_DIRECTION_MAP.get(params.flight_direction.upper())
             if direction:
                 kwargs["flightDirection"] = direction
-        return list(asf.search(**kwargs))
+
+        cache_key = tuple(sorted(kwargs.items()))
+        cached = self._search_cache.get(cache_key)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _SEARCH_CACHE_TTL_S:
+            return cached[1]
+
+        results = list(asf.search(**kwargs))
+
+        if len(self._search_cache) >= _SEARCH_CACHE_MAX_ENTRIES:
+            self._search_cache.clear()
+        self._search_cache[cache_key] = (now, results)
+        return results
 
     def search(self, params: SearchParams) -> List[SARScene]:
         """Return scenes sorted by date, deduplicated to one per acquisition date.
