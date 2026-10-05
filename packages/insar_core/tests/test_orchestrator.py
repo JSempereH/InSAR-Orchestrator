@@ -1,3 +1,4 @@
+import threading
 from datetime import date
 from pathlib import Path
 from typing import List
@@ -37,11 +38,13 @@ class FakeProcessor(ProcessorAdapter):
     def __init__(self, fail_granules=frozenset()):
         self.submitted: list[tuple[str, str]] = []
         self._fail_granules = fail_granules
+        self._lock = threading.Lock()
 
     def submit_pair(self, reference: str, secondary: str, name: str = "insar-job", **kwargs) -> SubmittedJob:
         if reference in self._fail_granules:
             raise RuntimeError(f"submission failed for {reference}")
-        self.submitted.append((reference, secondary))
+        with self._lock:
+            self.submitted.append((reference, secondary))
         return SubmittedJob(
             hyp3_job_id=f"job-{reference}-{secondary}",
             reference_granule=reference,
@@ -56,6 +59,29 @@ class FakeProcessor(ProcessorAdapter):
 
     def download(self, job_id: str, destination: Path) -> List[Path]:
         raise NotImplementedError
+
+
+def _job(job_id: str, status: JobStatus) -> SubmittedJob:
+    return SubmittedJob(
+        hyp3_job_id=job_id, reference_granule="ref", secondary_granule="sec",
+        reference_date=date(2023, 1, 1), secondary_date=date(2023, 1, 2), status=status,
+    )
+
+
+class BulkProcessor(FakeProcessor):
+    """A processor that also implements get_jobs_bulk, like HyP3Adapter."""
+
+    def __init__(self, jobs_by_id: dict[str, SubmittedJob]):
+        super().__init__()
+        self.bulk_calls = 0
+        self._jobs_by_id = jobs_by_id
+
+    def get_jobs_bulk(self, since=None) -> dict[str, SubmittedJob]:
+        self.bulk_calls += 1
+        return self._jobs_by_id
+
+    def download(self, job_id: str, destination: Path) -> List[Path]:
+        return [destination / f"{job_id}.tif"]
 
 
 def _params() -> SearchParams:
@@ -97,7 +123,9 @@ def test_submit_batch_submits_all_built_pairs():
     jobs = orchestrator.submit_batch(_params(), max_temporal_neighbors=1, job_name="test")
 
     assert len(jobs) == 2
-    assert processor.submitted == [("S1_01", "S1_02"), ("S1_02", "S1_03")]
+    # Submission runs concurrently (see _SUBMIT_CONCURRENCY), so which pair's
+    # request completes first isn't guaranteed - only that both were submitted.
+    assert set(processor.submitted) == {("S1_01", "S1_02"), ("S1_02", "S1_03")}
     assert all(j.status == JobStatus.PENDING for j in jobs)
 
 
@@ -111,3 +139,57 @@ def test_submit_batch_skips_failed_pairs_but_returns_the_rest():
 
     assert len(jobs) == 1
     assert jobs[0].reference_granule == "S1_02"
+
+
+def test_poll_jobs_uses_bulk_lookup_when_available():
+    processor = BulkProcessor({
+        "job-1": _job("job-1", JobStatus.SUCCEEDED),
+        "job-2": _job("job-2", JobStatus.RUNNING),
+        "job-unrelated": _job("job-unrelated", JobStatus.FAILED),
+    })
+    orchestrator = InSAROrchestrator(FakeSceneAdapter([]), processor)
+
+    refreshed = orchestrator.poll_jobs(["job-1", "job-2"])
+
+    assert processor.bulk_calls == 1  # one call covers both ids, not one per id
+    assert {j.hyp3_job_id for j in refreshed} == {"job-1", "job-2"}
+
+
+def test_poll_jobs_falls_back_to_get_status_without_bulk_support():
+    class NoBulkProcessor(FakeProcessor):
+        def get_status(self, job_id: str) -> SubmittedJob:
+            return _job(job_id, JobStatus.RUNNING)
+
+    orchestrator = InSAROrchestrator(FakeSceneAdapter([]), NoBulkProcessor())
+    refreshed = orchestrator.poll_jobs(["job-1", "job-2"])
+    assert {j.hyp3_job_id for j in refreshed} == {"job-1", "job-2"}
+
+
+def test_poll_jobs_logs_and_skips_a_failing_get_status(caplog):
+    class FlakyProcessor(FakeProcessor):
+        def get_status(self, job_id: str) -> SubmittedJob:
+            if job_id == "job-bad":
+                raise RuntimeError("boom")
+            return _job(job_id, JobStatus.RUNNING)
+
+    orchestrator = InSAROrchestrator(FakeSceneAdapter([]), FlakyProcessor())
+    with caplog.at_level("WARNING"):
+        refreshed = orchestrator.poll_jobs(["job-bad", "job-good"])
+
+    assert [j.hyp3_job_id for j in refreshed] == ["job-good"]
+    assert any("job-bad" in record.message for record in caplog.records)
+
+
+def test_download_succeeded_downloads_only_succeeded_jobs(tmp_path):
+    processor = BulkProcessor({})
+    orchestrator = InSAROrchestrator(FakeSceneAdapter([]), processor)
+    jobs = [
+        _job("job-done", JobStatus.SUCCEEDED),
+        _job("job-running", JobStatus.RUNNING),
+        _job("job-failed", JobStatus.FAILED),
+    ]
+
+    results = orchestrator.download_succeeded(jobs, tmp_path)
+
+    assert list(results.keys()) == ["job-done"]
+    assert results["job-done"] == [tmp_path / "job-done.tif"]
