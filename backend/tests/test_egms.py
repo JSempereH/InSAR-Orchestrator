@@ -1,12 +1,22 @@
 """EGMS search/download endpoints. All network calls to the real EGMS API
 are mocked out via egms_service.get_egms_adapter."""
 import time
+from pathlib import Path
 
 import pytest
 
-from app.services import egms_download_queue, egms_service
+from app.services import egms_download_queue, egms_points, egms_service
 
 _GEOMETRY = {"type": "Polygon", "coordinates": [[[3.0, 49.0], [3.6, 49.0], [3.6, 49.5], [3.0, 49.0]]]}
+
+# A real EGMS L2b download the project owner already has on disk. backend/downloads
+# is gitignored (personal data), so this file only exists on machines that ran a
+# real download; the test below skips itself where it doesn't, but running it once
+# is what confirmed the CSV schema documented at the top of egms_points.py.
+_REAL_L2B_ZIP = (
+    Path(__file__).resolve().parents[1]
+    / "downloads" / "egms" / "comillas" / "EGMS_L2b_001_0237_IW2_VV_2020_2024_1.zip"
+)
 
 
 class _FakeAdapter:
@@ -152,16 +162,49 @@ def test_delete_download_record(client, monkeypatch):
     assert all(d["id"] != download_id for d in client.get("/api/egms/downloads").json())
 
 
-def test_points_rejects_non_l3_downloads(client, monkeypatch):
+def test_points_accepts_l2b_downloads(client, monkeypatch, tmp_path):
+    """L2A/L2B CSVs carry latitude/longitude/mean_velocity too, so the point
+    map (the entry point for picking a point to request a time series for)
+    must work for them, not just L3."""
     monkeypatch.setattr(egms_service, "get_egms_adapter", lambda db: _FakeAdapter())
 
+    dest_dir = tmp_path / "egms-l2b-points-test"
+    dest_dir.mkdir()
+    (dest_dir / "points.csv").write_text(
+        "pid,latitude,longitude,mean_velocity,20200107,20200113\n"
+        "P1,49.1,3.2,-4.5,-0.1,0.3\n"
+    )
+    monkeypatch.setattr(
+        "app.services.egms_download_queue.resolve_destination",
+        lambda mountpoint, name: dest_dir,
+    )
+
     client.post("/api/egms/downloads/queue", json={
-        "products": [{"query_id": "q1", "filename": "l2b-product.zip", "level": "L2B", "size_mb": 1.0}],
+        "products": [{"query_id": "q1", "filename": "points.csv", "level": "L2B", "size_mb": 0.001}],
         "destination_name": "Test AOI",
         "geometry": _GEOMETRY, "level": "L2B", "release": "2019-2023", "direction": "descending",
     })
     download_id = next(
-        d for d in client.get("/api/egms/downloads").json() if d["filenames"] == ["l2b-product.zip"]
+        d for d in client.get("/api/egms/downloads").json() if d["filenames"] == ["points.csv"]
+    )["id"]
+
+    resp = client.get(f"/api/egms/downloads/{download_id}/points")
+    assert resp.status_code == 200
+    features = resp.json()["features"]
+    assert len(features) == 1
+    assert features[0]["properties"]["point_id"] == "P1"
+
+
+def test_points_rejects_unsupported_level(client, monkeypatch):
+    monkeypatch.setattr(egms_service, "get_egms_adapter", lambda db: _FakeAdapter())
+
+    client.post("/api/egms/downloads/queue", json={
+        "products": [{"query_id": "q1", "filename": "weird-product.zip", "level": "L4", "size_mb": 1.0}],
+        "destination_name": "Test AOI",
+        "geometry": _GEOMETRY, "level": "L4", "release": "2019-2023",
+    })
+    download_id = next(
+        d for d in client.get("/api/egms/downloads").json() if d["filenames"] == ["weird-product.zip"]
     )["id"]
 
     resp = client.get(f"/api/egms/downloads/{download_id}/points")
@@ -204,3 +247,231 @@ def test_points_parses_csv_file(client, monkeypatch, tmp_path):
     assert len(fc["features"]) == 2
     velocities = sorted(f["properties"]["velocity"] for f in fc["features"])
     assert velocities == [-4.5, 2.1]
+
+
+def test_points_filters_to_the_downloads_own_aoi_bbox(client, monkeypatch, tmp_path):
+    """EGMS ships one file per whole swath tile, not clipped to the AOI that
+    was searched - a row far outside the AOI the download was made for
+    (like a different Sentinel-1 swath entirely) must not show up on the map."""
+    monkeypatch.setattr(egms_service, "get_egms_adapter", lambda db: _FakeAdapter())
+
+    dest_dir = tmp_path / "egms-bbox-test"
+    dest_dir.mkdir()
+    (dest_dir / "points.csv").write_text(
+        "pid,latitude,longitude,mean_velocity\n"
+        "inside,49.2,3.3,1.0\n"
+        "far_away,10.0,-70.0,2.0\n"
+    )
+    monkeypatch.setattr(
+        "app.services.egms_download_queue.resolve_destination",
+        lambda mountpoint, name: dest_dir,
+    )
+
+    client.post("/api/egms/downloads/queue", json={
+        "products": [{"query_id": "q1", "filename": "points.csv", "level": "L3", "size_mb": 0.001}],
+        "destination_name": "Bbox test",
+        "geometry": _GEOMETRY, "level": "L3", "release": "2019-2023", "product_type": "ORTHO-UP",
+    })
+    download_id = next(
+        d for d in client.get("/api/egms/downloads").json() if d["filenames"] == ["points.csv"]
+    )["id"]
+
+    resp = client.get(f"/api/egms/downloads/{download_id}/points")
+    assert resp.status_code == 200
+    features = resp.json()["features"]
+    assert [f["properties"]["point_id"] for f in features] == ["inside"]
+
+
+def test_extract_points_is_cached_after_first_call(tmp_path):
+    """A bbox-filtered scan of a real multi-GB EGMS file can take minutes
+    (confirmed against a real download); this is what keeps a second "Show
+    points" click for the same download from repeating that scan."""
+    dest_dir = tmp_path / "egms-cache-test"
+    dest_dir.mkdir()
+    (dest_dir / "points.csv").write_text(
+        "pid,latitude,longitude,mean_velocity\n"
+        "1,49.1,3.2,-4.5\n"
+    )
+
+    fc1 = egms_points.extract_points(dest_dir, ["points.csv"])
+    assert len(fc1["features"]) == 1
+    assert (dest_dir / ".points_cache.json").exists()
+
+    # Add a second row directly on disk - if extract_points reads the cache
+    # instead of re-parsing, this must not show up in the next call.
+    (dest_dir / "points.csv").write_text(
+        "pid,latitude,longitude,mean_velocity\n"
+        "1,49.1,3.2,-4.5\n"
+        "2,49.2,3.3,2.1\n"
+    )
+    fc2 = egms_points.extract_points(dest_dir, ["points.csv"])
+    assert len(fc2["features"]) == 1
+
+
+def test_extract_time_series_is_populated_by_extract_points(tmp_path):
+    """extract_points does one pass over each row for both the map and the
+    time series cache, so a point click never has to re-scan the file."""
+    dest_dir = tmp_path / "egms-series-cache-test"
+    dest_dir.mkdir()
+    (dest_dir / "points.csv").write_text(
+        "pid,latitude,longitude,mean_velocity,20200107,20200113\n"
+        "P1,49.1,3.2,-4.5,-0.1,0.3\n"
+    )
+
+    fc = egms_points.extract_points(dest_dir, ["points.csv"])
+    point_id = fc["features"][0]["properties"]["point_id"]
+    assert (dest_dir / ".timeseries_cache.json").exists()
+
+    # Corrupt the source file - if extract_time_series were reading the raw
+    # CSV instead of the cache extract_points already wrote, this would blow
+    # up or return nothing instead of the still-cached series.
+    (dest_dir / "points.csv").write_text("not,a,valid,csv,at,all")
+    series = egms_points.extract_time_series(dest_dir, ["points.csv"], point_id)
+    assert series == {"dates": ["20200107", "20200113"], "values_mm": [-0.1, 0.3]}
+
+
+def test_extract_points_merges_results_from_multiple_files(tmp_path):
+    """A download with more than one zip file processes them concurrently
+    (see egms_points._process_files_in_parallel - measured ~1.5x faster on a
+    real two-file download). This checks the merge itself: results from every
+    file must show up together, regardless of how they were computed."""
+    import zipfile
+
+    dest_dir = tmp_path / "egms-multi-file-test"
+    dest_dir.mkdir()
+
+    def _make_zip(name: str, pid: str, lon: float, lat: float) -> None:
+        csv_name = f"{name}.csv"
+        with zipfile.ZipFile(dest_dir / f"{name}.zip", "w") as zf:
+            zf.writestr(csv_name, (
+                "pid,latitude,longitude,mean_velocity,20200107,20200113\n"
+                f"{pid},{lat},{lon},1.0,0.1,0.2\n"
+            ))
+
+    _make_zip("file_a", "A1", 3.2, 49.1)
+    _make_zip("file_b", "B1", 3.3, 49.2)
+
+    fc = egms_points.extract_points(dest_dir, ["file_a.zip", "file_b.zip"])
+    point_ids = sorted(f["properties"]["point_id"] for f in fc["features"])
+    assert point_ids == ["A1", "B1"]
+
+    series_a = egms_points.extract_time_series(dest_dir, ["file_a.zip", "file_b.zip"], "A1")
+    series_b = egms_points.extract_time_series(dest_dir, ["file_a.zip", "file_b.zip"], "B1")
+    assert series_a == {"dates": ["20200107", "20200113"], "values_mm": [0.1, 0.2]}
+    assert series_b == {"dates": ["20200107", "20200113"], "values_mm": [0.1, 0.2]}
+
+
+def test_cache_is_ignored_when_query_parameters_change(tmp_path):
+    """A cache written for one (filenames, geometry) pair must never be
+    served to a call with different ones - the destination folder is the
+    only cache key, so without checking the query itself a stale result from
+    an earlier query would be returned silently instead of recomputed."""
+    dest_dir = tmp_path / "egms-cache-invalidation-test"
+    dest_dir.mkdir()
+    (dest_dir / "a.csv").write_text(
+        "pid,latitude,longitude,mean_velocity\n1,49.1,3.2,-4.5\n"
+    )
+    (dest_dir / "b.csv").write_text(
+        "pid,latitude,longitude,mean_velocity\n2,49.2,3.3,2.1\n"
+    )
+
+    fc_a = egms_points.extract_points(dest_dir, ["a.csv"])
+    assert [f["properties"]["point_id"] for f in fc_a["features"]] == ["1"]
+
+    # Same destination folder, different filenames - must recompute, not
+    # reuse the cache written for "a.csv" above.
+    fc_b = egms_points.extract_points(dest_dir, ["b.csv"])
+    assert [f["properties"]["point_id"] for f in fc_b["features"]] == ["2"]
+
+
+def test_timeseries_rejects_l3_downloads(client, monkeypatch):
+    monkeypatch.setattr(egms_service, "get_egms_adapter", lambda db: _FakeAdapter())
+
+    client.post("/api/egms/downloads/queue", json={
+        "products": [{"query_id": "q1", "filename": "l3-product.zip", "level": "L3", "size_mb": 1.0}],
+        "destination_name": "Test AOI",
+        "geometry": _GEOMETRY, "level": "L3", "release": "2019-2023", "product_type": "ORTHO-UP",
+    })
+    download_id = next(
+        d for d in client.get("/api/egms/downloads").json() if d["filenames"] == ["l3-product.zip"]
+    )["id"]
+
+    resp = client.get(f"/api/egms/downloads/{download_id}/points/whatever/timeseries")
+    assert resp.status_code == 400
+
+
+def test_timeseries_returns_dates_and_values(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(egms_service, "get_egms_adapter", lambda db: _FakeAdapter())
+
+    dest_dir = tmp_path / "egms-timeseries-test"
+    dest_dir.mkdir()
+    (dest_dir / "points.csv").write_text(
+        "pid,latitude,longitude,mean_velocity,20200107,20200113\n"
+        "P1,49.1,3.2,-4.5,-0.1,0.3\n"
+        "P2,49.2,3.3,2.1,0.2,0.4\n"
+    )
+    monkeypatch.setattr(
+        "app.services.egms_download_queue.resolve_destination",
+        lambda mountpoint, name: dest_dir,
+    )
+
+    client.post("/api/egms/downloads/queue", json={
+        "products": [{"query_id": "q1", "filename": "points.csv", "level": "L2B", "size_mb": 0.001}],
+        "destination_name": "Test AOI",
+        "geometry": _GEOMETRY, "level": "L2B", "release": "2019-2023", "direction": "descending",
+    })
+    download_id = next(
+        d for d in client.get("/api/egms/downloads").json() if d["filenames"] == ["points.csv"]
+    )["id"]
+
+    resp = client.get(f"/api/egms/downloads/{download_id}/points/P1/timeseries")
+    assert resp.status_code == 200
+    assert resp.json() == {"dates": ["20200107", "20200113"], "values_mm": [-0.1, 0.3]}
+
+    resp = client.get(f"/api/egms/downloads/{download_id}/points/does-not-exist/timeseries")
+    assert resp.status_code == 404
+
+
+@pytest.mark.skipif(
+    not _REAL_L2B_ZIP.exists(),
+    reason="Real EGMS L2b sample only present on machines that ran a real download",
+)
+def test_extract_functions_against_real_l2b_download():
+    """Smoke test against an actual downloaded EGMS L2b product, not a
+    hand-written fixture, so a schema change on EGMS's side would be caught
+    here instead of only in production.
+
+    This runs against the user's real downloads folder (not a tmp_path),
+    since the whole point is testing the real file. It uses only one of the
+    (possibly several) real files in that folder, which is a different cache
+    key than the app's own real usage (which passes every file) - so it must
+    restore whatever cache was already there afterward, not just delete it:
+    deleting would just as easily wipe out a real, already-computed cache
+    from actual use of the app as it would a stray file left by a previous
+    test run."""
+    destination = _REAL_L2B_ZIP.parent
+    filenames = [_REAL_L2B_ZIP.name]
+    cache_paths = [destination / ".points_cache.json", destination / ".timeseries_cache.json"]
+    backups = {path: (path.read_bytes() if path.exists() else None) for path in cache_paths}
+
+    try:
+        fc = egms_points.extract_points(destination, filenames)
+        assert fc["type"] == "FeatureCollection"
+        assert len(fc["features"]) > 0
+        first = fc["features"][0]
+        assert first["geometry"]["type"] == "Point"
+        point_id = first["properties"]["point_id"]
+        assert point_id
+
+        series = egms_points.extract_time_series(destination, filenames, point_id)
+        assert series is not None
+        assert len(series["dates"]) == len(series["values_mm"])
+        assert len(series["dates"]) > 100  # multi-year, roughly weekly cadence
+        assert all(len(d) == 8 and d.isdigit() for d in series["dates"])
+        assert series["dates"] == sorted(series["dates"])
+    finally:
+        for path, original in backups.items():
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(original)
