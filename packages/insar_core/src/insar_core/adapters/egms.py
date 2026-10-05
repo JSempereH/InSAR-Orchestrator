@@ -6,10 +6,9 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 import jwt
-import requests
 
 from insar_core.models.egms import EGMSProduct, EGMSSearchParams
-from insar_core.net import stream_download
+from insar_core.net import request_with_retry, stream_download
 
 API_BASE = "https://egms.land.copernicus.eu/insar-api/archive"
 
@@ -64,8 +63,8 @@ class EGMSAdapter:
             "exp": now + 3600,
         }
         assertion = jwt.encode(claim_set, self._key.private_key, algorithm="RS256")
-        resp = requests.post(
-            self._key.token_uri,
+        resp = request_with_retry(
+            "POST", self._key.token_uri,
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -76,7 +75,6 @@ class EGMSAdapter:
             },
             timeout=30,
         )
-        resp.raise_for_status()
         payload = resp.json()
         token: str = payload["access_token"]
         self._access_token = token
@@ -92,8 +90,7 @@ class EGMSAdapter:
         `kind` is one of: levels, releases, swaths, relative_orbits, bursts,
         directions, tile_ids, product_types.
         """
-        resp = requests.get(f"{API_BASE}/{kind}", headers=self._headers(), timeout=30)
-        resp.raise_for_status()
+        resp = request_with_retry("GET", f"{API_BASE}/{kind}", headers=self._headers(), timeout=30)
         return resp.json()
 
     def search(self, params: EGMSSearchParams) -> List[EGMSProduct]:
@@ -111,8 +108,7 @@ class EGMSAdapter:
         if params.tile_id:
             body["tileId"] = params.tile_id
 
-        resp = requests.post(f"{API_BASE}/search", headers=self._headers(), json=body, timeout=60)
-        resp.raise_for_status()
+        resp = request_with_retry("POST", f"{API_BASE}/search", headers=self._headers(), json=body, timeout=60)
         result = resp.json()
         query_id = result.get("id")
         return [
@@ -142,7 +138,5 @@ class EGMSAdapter:
 
 def _aoi_points(aoi) -> list[list[float]]:
     """EGMS accepts a list of AOI vertices and derives the bounding box itself."""
-    geom = aoi.geometry
-    if geom.get("type") == "Feature":
-        geom = geom["geometry"]
-    return [[lon, lat] for lon, lat in geom["coordinates"][0]]
+    coords = aoi.geometry_unwrapped["coordinates"][0]
+    return [[lon, lat] for lon, lat in coords]
