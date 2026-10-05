@@ -5,15 +5,20 @@ import {
   EGMSDownloadRecord, PathUsage, Project, StorageTarget,
 } from "../api/client";
 import { DownloadFootprint, DownloadsMap } from "../components/Map/DownloadsMap";
+import { LoadingDots } from "../components/LoadingDots";
+import { TimeSeriesChart } from "../components/TimeSeriesChart";
 
 type Row =
   | { kind: "asf"; id: string; project: Project; path: string | null }
   | { kind: "egms"; id: string; download: EGMSDownloadRecord; path: string };
 
+const TIME_SERIES_LEVELS = new Set(["L2A", "L2B"]);
+
 export function DownloadsPage() {
   const qc = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pointsForId, setPointsForId] = useState<string | null>(null);
+  const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
   const [movingRowId, setMovingRowId] = useState<string | null>(null);
   const [moveTarget, setMoveTarget] = useState<string>("");
 
@@ -63,6 +68,12 @@ export function DownloadsPage() {
     enabled: !!pointsForId,
   });
 
+  const timeSeriesQuery = useQuery({
+    queryKey: ["egms-timeseries", pointsForId, selectedPointId],
+    queryFn: () => egmsApi.getTimeSeries(pointsForId!, selectedPointId!),
+    enabled: !!pointsForId && !!selectedPointId,
+  });
+
   const deleteEgmsMut = useMutation({
     mutationFn: ({ id, deleteFiles }: { id: string; deleteFiles: boolean }) => egmsApi.deleteDownload(id, deleteFiles),
     onSuccess: () => {
@@ -106,6 +117,7 @@ export function DownloadsPage() {
 
   const selectedEgms = egmsDownloads?.find((d) => d.id === selectedId);
   const showingPointsForSelected = !!selectedEgms && pointsForId === selectedEgms.id;
+  const loadingPoints = pointsQuery.isFetching && pointsForId === selectedEgms?.id;
   const moveBusy = !!moveState?.active;
 
   return (
@@ -128,29 +140,37 @@ export function DownloadsPage() {
           footprints={footprints}
           points={showingPointsForSelected ? (pointsQuery.data ?? null) : null}
           selectedId={selectedId}
-          onSelect={setSelectedId}
+          onSelect={(id) => { setSelectedId(id); setSelectedPointId(null); }}
+          onPointClick={(feature) => setSelectedPointId(feature.properties?.point_id ?? null)}
           height={440}
         />
       </div>
 
       {selectedEgms && (
-        <div className="card" style={{ padding: 16, marginBottom: 20, display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: 13 }}>{selectedEgms.name}</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              {selectedEgms.level} · {selectedEgms.release} · {selectedEgms.filenames.length} file(s)
+        <div className="card" style={{ padding: 16, marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{selectedEgms.name}</div>
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                {selectedEgms.level} · {selectedEgms.release} · {selectedEgms.filenames.length} file(s)
+              </div>
             </div>
-          </div>
-          {selectedEgms.level === "L3" ? (
+            {loadingPoints && <LoadingDots label="Loading…" />}
             <button
               className="btn btn-primary btn-sm"
-              disabled={pointsQuery.isFetching && pointsForId === selectedEgms.id}
-              onClick={() => setPointsForId(showingPointsForSelected ? null : selectedEgms.id)}
+              disabled={loadingPoints}
+              onClick={() => {
+                setPointsForId(showingPointsForSelected ? null : selectedEgms.id);
+                setSelectedPointId(null);
+              }}
             >
-              {showingPointsForSelected ? "Hide velocity points" : pointsQuery.isFetching ? "Loading…" : "Show velocity points"}
+              {showingPointsForSelected ? "Hide points" : "Show points"}
             </button>
-          ) : (
-            <span style={{ fontSize: 12, color: "var(--text-faint)" }}>Point visualization available for L3 only</span>
+          </div>
+          {loadingPoints && (
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)" }}>
+              Parsing the downloaded file(s) - large L2A/L2B tiles can take a minute or more.
+            </div>
           )}
         </div>
       )}
@@ -158,6 +178,30 @@ export function DownloadsPage() {
       {pointsQuery.isError && pointsForId === selectedEgms?.id && (
         <div style={{ marginBottom: 20, padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13 }}>
           Failed to parse points from the downloaded file. {String(pointsQuery.error)}
+        </div>
+      )}
+
+      {selectedPointId && showingPointsForSelected && (
+        <div style={{ marginBottom: 20 }}>
+          {selectedEgms && !TIME_SERIES_LEVELS.has(selectedEgms.level) ? (
+            <div style={{ padding: "10px 14px", background: "var(--warning-light)", borderRadius: "var(--radius)", color: "#92400e", fontSize: 13 }}>
+              Time series is only available for L2A/L2B downloads (this one is {selectedEgms.level}, velocity-only).
+            </div>
+          ) : timeSeriesQuery.isError ? (
+            <div style={{ padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13 }}>
+              Failed to load the time series for this point. {String(timeSeriesQuery.error)}
+            </div>
+          ) : timeSeriesQuery.data ? (
+            <TimeSeriesChart
+              dates={timeSeriesQuery.data.dates}
+              valuesMm={timeSeriesQuery.data.values_mm}
+              title={`Displacement time series - point ${selectedPointId}`}
+            />
+          ) : (
+            <div style={{ padding: "10px 14px" }}>
+              <LoadingDots label="Loading time series…" />
+            </div>
+          )}
         </div>
       )}
 

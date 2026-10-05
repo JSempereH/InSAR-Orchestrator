@@ -3,6 +3,7 @@ import { Fragment, useState } from "react";
 import { projectsApi, storageApi, TrackSummary } from "../../api/client";
 import { AOIMap } from "../Map/AOIMap";
 import { TrackPicker } from "../SceneSearch/TrackPicker";
+import { StorageTargetSelect } from "../StorageTargetSelect";
 
 type Step = 1 | 2 | 3;
 
@@ -166,18 +167,12 @@ export function NewProjectWizard({ onDone }: { onDone: () => void }) {
 
             <div className="field" style={{ maxWidth: 340, marginTop: 16 }}>
               <label>Storage destination</label>
-              <select
-                className="input"
+              <StorageTargetSelect
+                targets={storageTargets}
                 value={storageMountpoint}
-                onChange={(e) => setStorageMountpoint(e.target.value)}
-              >
-                {storageTargets?.map((t) => (
-                  <option key={t.mountpoint ?? "default"} value={t.mountpoint ?? ""} disabled={!t.writable}>
-                    {t.mountpoint ? `${t.mountpoint} (${t.device})` : "App default"}
-                    {" · "}{t.free_gb} GB free of {t.total_gb} GB{!t.writable ? " · not writable" : ""}
-                  </option>
-                ))}
-              </select>
+                onChange={setStorageMountpoint}
+                showTotal
+              />
               <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                 All downloads for this project will be saved here. Cannot be changed later.
               </span>

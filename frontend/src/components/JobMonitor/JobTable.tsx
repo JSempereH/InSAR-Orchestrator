@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AxiosError } from "axios";
 import { DownloadProgress, Job, QueueState, downloadQueueApi, jobsApi } from "../../api/client";
 
 const BADGE: Record<string, string> = {
@@ -67,34 +68,53 @@ export function JobTable({ projectId, batchId, queueState, totalPairs, submittin
     if (allCheckRef.current) allCheckRef.current.indeterminate = someButNotAll;
   }, [someButNotAll]);
 
-  function toggleSelect(id: string) {
+  // Stable identity (setSelectedIds itself never changes) so memoized
+  // JobRows don't get a "new" callback prop - and thus don't re-render -
+  // on every unrelated poll of this table.
+  const toggleSelect = useCallback((id: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
-  }
+  }, []);
 
   function toggleSelectAll() {
     if (allSucceeded || someButNotAll) setSelectedIds(new Set());
     else setSelectedIds(new Set(succeededJobs.map((j) => j.id)));
   }
 
-  async function handleQueueSelected() {
+  const queueSelectedMut = useMutation({
+    mutationFn: async (toQueue: { job_id: string; hyp3_job_id: string }[]) => {
+      if (queueState?.active) {
+        if (!confirm(`A download is already in progress. This will replace the pending queue with ${toQueue.length} new jobs. Continue?`)) {
+          throw new Error("cancelled");
+        }
+      }
+      return downloadQueueApi.start(toQueue);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["download-queue"] });
+      setSelectedIds(new Set());
+    },
+  });
+
+  function handleQueueSelected() {
     const toQueue = succeededJobs
       .filter((j) => selectedIds.has(j.id) && j.hyp3_job_id)
       .map((j) => ({ job_id: j.id, hyp3_job_id: j.hyp3_job_id! }));
     if (!toQueue.length) return;
-
-    const queueRunning = queueState?.active;
-    if (queueRunning) {
-      if (!confirm(`A download is already in progress. This will replace the pending queue with ${toQueue.length} new jobs. Continue?`)) return;
-    }
-
-    await downloadQueueApi.start(toQueue);
-    qc.invalidateQueries({ queryKey: ["download-queue"] });
-    setSelectedIds(new Set());
+    queueSelectedMut.mutate(toQueue);
   }
+
+  const downloadSingleMut = useMutation({
+    mutationFn: (item: { job_id: string; hyp3_job_id: string }) => downloadQueueApi.start([item]),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["download-queue"] }),
+  });
+  const handleDownloadSingle = useCallback(
+    (jobId: string, hyp3JobId: string) => downloadSingleMut.mutate({ job_id: jobId, hyp3_job_id: hyp3JobId }),
+    [downloadSingleMut],
+  );
 
   // Current job being downloaded in the queue (for row highlighting)
   const currentDownloadJobId = queueState?.current_job_id ?? null;
@@ -112,6 +132,21 @@ export function JobTable({ projectId, batchId, queueState, totalPairs, submittin
             animation: "pulse 1.2s ease-in-out infinite", flexShrink: 0,
           }} />
           Submitting to HyP3… {jobs.length} / {totalPairs ?? "?"} pairs sent so far
+        </div>
+      )}
+
+      {queueSelectedMut.isError && String(queueSelectedMut.error) !== "Error: cancelled" && (
+        <div style={{ marginBottom: 10, fontSize: 12, color: "var(--danger)" }}>
+          Failed to queue downloads: {String(
+            (queueSelectedMut.error as AxiosError<{ detail?: string }>)?.response?.data?.detail ?? queueSelectedMut.error
+          )}
+        </div>
+      )}
+      {downloadSingleMut.isError && (
+        <div style={{ marginBottom: 10, fontSize: 12, color: "var(--danger)" }}>
+          Failed to queue download: {String(
+            (downloadSingleMut.error as AxiosError<{ detail?: string }>)?.response?.data?.detail ?? downloadSingleMut.error
+          )}
         </div>
       )}
 
@@ -190,9 +225,10 @@ export function JobTable({ projectId, batchId, queueState, totalPairs, submittin
               <button
                 className="btn btn-primary btn-sm"
                 onClick={handleQueueSelected}
+                disabled={queueSelectedMut.isPending}
                 style={{ marginLeft: 4 }}
               >
-                ↓ Queue {selectedIds.size} for download
+                {queueSelectedMut.isPending ? "Queuing…" : `↓ Queue ${selectedIds.size} for download`}
               </button>
               <button
                 className="btn btn-ghost btn-sm"
@@ -241,13 +277,8 @@ export function JobTable({ projectId, batchId, queueState, totalPairs, submittin
                   isCurrentlyDownloading={isCurrentlyDownloading}
                   isInQueue={isInQueue}
                   currentProgress={isCurrentlyDownloading ? (queueState?.current_progress ?? null) : null}
-                  onToggleSelect={() => toggleSelect(job.id)}
-                  onDownloadSingle={
-                    job.status === "SUCCEEDED" && job.hyp3_job_id
-                      ? () => downloadQueueApi.start([{ job_id: job.id, hyp3_job_id: job.hyp3_job_id! }])
-                          .then(() => qc.invalidateQueries({ queryKey: ["download-queue"] }))
-                      : undefined
-                  }
+                  onToggleSelect={toggleSelect}
+                  onDownloadSingle={handleDownloadSingle}
                 />
               );
             })}
@@ -258,7 +289,7 @@ export function JobTable({ projectId, batchId, queueState, totalPairs, submittin
   );
 }
 
-function JobRow({
+const JobRow = memo(function JobRow({
   job, selected, isCurrentlyDownloading, isInQueue,
   currentProgress, onToggleSelect, onDownloadSingle,
 }: {
@@ -267,8 +298,8 @@ function JobRow({
   isCurrentlyDownloading: boolean;
   isInQueue: boolean;
   currentProgress: DownloadProgress | null;
-  onToggleSelect: () => void;
-  onDownloadSingle?: () => void;
+  onToggleSelect: (id: string) => void;
+  onDownloadSingle: (jobId: string, hyp3JobId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [logContent, setLogContent] = useState<Record<string, string>>({});
@@ -310,7 +341,7 @@ function JobRow({
             <input
               type="checkbox"
               checked={selected}
-              onChange={(e) => { e.stopPropagation(); onToggleSelect(); }}
+              onChange={(e) => { e.stopPropagation(); onToggleSelect(job.id); }}
               onClick={(e) => e.stopPropagation()}
               style={{ cursor: "pointer" }}
               disabled={isCurrentlyDownloading || isInQueue}
@@ -348,10 +379,10 @@ function JobRow({
             <span style={{ fontSize: 11, color: "#22c55e", fontWeight: 600 }}>↓ dl…</span>
           ) : isInQueue ? (
             <span style={{ fontSize: 11, color: "var(--text-faint)" }}>in queue</span>
-          ) : job.status === "SUCCEEDED" && onDownloadSingle ? (
+          ) : job.status === "SUCCEEDED" && job.hyp3_job_id ? (
             <button
               className="btn btn-secondary btn-sm"
-              onClick={(e) => { e.stopPropagation(); onDownloadSingle(); }}
+              onClick={(e) => { e.stopPropagation(); onDownloadSingle(job.id, job.hyp3_job_id!); }}
               title={job.downloaded ? "Re-download" : "Download"}
             >
               {job.downloaded ? "↓ Re-dl" : "Download"}
@@ -421,7 +452,7 @@ function JobRow({
       )}
     </>
   );
-}
+});
 
 function InlineProgressBar({ progress }: { progress: DownloadProgress }) {
   const pct = progress.pct ?? 0;
