@@ -1,13 +1,39 @@
 import axios from "axios";
 
-// Override with VITE_API_URL (e.g. in a built/deployed environment where the
-// backend isn't on localhost); defaults to the local dev backend.
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+// In a built app the backend serves the UI, so requests are relative to the same
+// origin and work behind any host name or reverse proxy. `npm run dev` talks to
+// the backend on localhost:8000 instead. VITE_API_URL overrides both.
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
   headers: { "Content-Type": "application/json" },
+  withCredentials: true, // the session cookie, when APP_PASSWORD is set
 });
+
+export const AUTH_REQUIRED_EVENT = "insar-auth-required";
+
+// Any 401 means the session ended (or never started): tell the app to show the sign-in page.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 401 && !String(error.config?.url ?? "").startsWith("/api/auth/")) {
+      window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+    }
+    return Promise.reject(error);
+  },
+);
+
+export interface AuthStatus {
+  required: boolean;
+  authenticated: boolean;
+}
+
+export const authApi = {
+  status: () => api.get<AuthStatus>("/api/auth/status").then((r) => r.data),
+  login: (password: string) => api.post<AuthStatus>("/api/auth/login", { password }).then((r) => r.data),
+  logout: () => api.post<AuthStatus>("/api/auth/logout").then((r) => r.data),
+};
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -22,7 +48,20 @@ export interface Project {
   date_end?: string;
   max_temporal_neighbors: number;
   storage_path?: string;
+  backup_enabled: boolean;
+  archived_remote?: string | null;
+  archived_at?: string | null;
   created_at: string;
+}
+
+export interface ArchiveState {
+  project_id: string | null;
+  kind: "archive" | "restore" | null;
+  active: boolean;
+  status: "idle" | "running" | "done" | "error";
+  step?: string | null;
+  pct: number;
+  error?: string | null;
 }
 
 export interface ProjectCreate {
@@ -69,7 +108,16 @@ export interface Batch {
   total_pairs: number;
   status: "submitting" | "done";
   auto_download: boolean;
+  run_mintpy_when_done: boolean;
   created_at: string;
+}
+
+export interface ProjectRefresh {
+  date_end: string;
+  total_pairs: number;
+  scene_count?: number;
+  estimated_size_gb?: number;
+  batch?: Batch;
 }
 
 export interface Job {
@@ -215,6 +263,50 @@ export interface ProjectDownloadSummary {
 export interface TimeSeries {
   dates: string[];
   values_mm: number[];
+  /** Statistical summary computed by the backend; null when it could not be computed. */
+  analysis?: TimeSeriesAnalysis | null;
+}
+
+export type TimeSeriesModelKind = "stable" | "linear" | "quadratic" | "bilinear" | "step";
+
+// Computed server-side by insar_core.analysis.timeseries.analyze_time_series.
+export interface TimeSeriesAnalysis {
+  n: number;
+  start_date: string;
+  end_date: string;
+  span_years: number;
+  median_step_days: number;
+  gaps: number;
+  max: { value: number; date: string };
+  min: { value: number; date: string };
+  mean: number;
+  std: number;
+  velocity: {
+    ols_mm_yr: number;
+    se_mm_yr: number;
+    ci95: [number, number];
+    theil_sen_mm_yr: number;
+    mann_kendall_z: number;
+    mann_kendall_p: number;
+    lag1_autocorr: number;
+  };
+  model: {
+    kind: TimeSeriesModelKind;
+    label: string;
+    bic_gain: number;
+    break_date?: string;
+    slope_before?: number;
+    slope_after?: number;
+    step_mm?: number;
+    acceleration_mm_yr2?: number;
+  };
+  seasonal: { present: boolean; amplitude_mm: number; peak_month: number };
+  noise: { rms_mm: number; outliers: { date: string; value: number; residual: number }[] };
+  net_change_mm: number;
+  /** Cleaned, date-sorted series with the fitted overlays, all the same length. */
+  series: { dates: string[]; values: number[]; fit: number[]; trend: number[] };
+  break_index: number | null;
+  narrative: string[];
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -225,6 +317,14 @@ export const projectsApi = {
     api.post<Project>("/api/projects", data).then((r) => r.data),
   get: (id: string) =>
     api.get<Project>(`/api/projects/${id}`).then((r) => r.data),
+  update: (id: string, data: { description?: string; date_end?: string; max_temporal_neighbors?: number; backup_enabled?: boolean }) =>
+    api.patch<Project>(`/api/projects/${id}`, data).then((r) => r.data),
+  refresh: (id: string, body: { dry_run: boolean; date_end?: string; run_mintpy?: boolean }) =>
+    api.post<ProjectRefresh>(`/api/projects/${id}/refresh`, body).then((r) => r.data),
+  archive: (id: string, destination?: string) =>
+    api.post<ArchiveState>(`/api/projects/${id}/archive`, { destination: destination || null }).then((r) => r.data),
+  restore: (id: string) => api.post<ArchiveState>(`/api/projects/${id}/restore`).then((r) => r.data),
+  archiveState: () => api.get<ArchiveState>("/api/archive/state").then((r) => r.data),
   delete: (id: string) => api.delete(`/api/projects/${id}`),
   batches: (id: string) =>
     api.get<Batch[]>(`/api/projects/${id}/batches`).then((r) => r.data),
@@ -288,6 +388,8 @@ export const jobsApi = {
 export const batchesApi = {
   setAutoDownload: (batchId: string, auto_download: boolean) =>
     api.patch<Batch>(`/api/batches/${batchId}`, { auto_download }).then((r) => r.data),
+  rename: (batchId: string, label: string) =>
+    api.patch<Batch>(`/api/batches/${batchId}`, { label }).then((r) => r.data),
 };
 
 export const adminApi = {
@@ -315,7 +417,7 @@ export interface DiskUsage {
 
 export interface MintPyStatus {
   status: "NOT_STARTED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
-  started_at?: string;
+  started_at?: string | null;
   finished_at?: string | null;
   return_code?: number | null;
   error?: string | null;
@@ -372,4 +474,33 @@ export const credentialsApi = {
     api
       .put("/api/credentials", { provider, username, password })
       .then((r) => r.data),
+};
+
+// ── Backup ─────────────────────────────────────────────────────────────────
+
+export interface BackupConfig {
+  destination: string | null;
+  enabled: boolean;
+  interval_hours: number;
+  keep_daily: number;
+  keep_weekly: number;
+  include_slc: boolean;
+  last_run_at?: string | null;
+  last_status?: "ok" | "error" | null;
+  last_message?: string | null;
+}
+
+export interface BackupOverview {
+  rclone: { available: boolean; version?: string; remotes: string[] };
+  config: BackupConfig;
+  state: { running: boolean; status: string; step?: string | null; pct: number; error?: string | null };
+}
+
+export const backupApi = {
+  overview: () => api.get<BackupOverview>("/api/backup").then((r) => r.data),
+  saveConfig: (config: Omit<BackupConfig, "last_run_at" | "last_status" | "last_message">) =>
+    api.put<BackupConfig>("/api/backup/config", config).then((r) => r.data),
+  test: (destination: string) =>
+    api.post<{ ok: boolean; destination: string }>("/api/backup/test", { destination }).then((r) => r.data),
+  run: () => api.post("/api/backup/run").then((r) => r.data),
 };

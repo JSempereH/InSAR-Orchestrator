@@ -5,10 +5,10 @@ Kept separate from SQLAlchemy models to avoid coupling the API contract
 to internal table details, and to get automatic validation of incoming data.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------- Project ----------
@@ -27,6 +27,27 @@ class ProjectCreate(BaseModel):
     )
 
 
+def _check_iso_date(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return value
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError("Dates must be ISO formatted (YYYY-MM-DD)") from exc
+    return value
+
+
+class ProjectUpdate(BaseModel):
+    """Editable project fields. The AOI, track and start date are fixed once
+    created because already-downloaded (and cropped) data depends on them."""
+    description: Optional[str] = None
+    date_end: Optional[str] = None
+    max_temporal_neighbors: Optional[int] = Field(None, ge=1, le=10)
+    backup_enabled: Optional[bool] = None
+
+    _validate_date_end = field_validator("date_end")(_check_iso_date)
+
+
 class ProjectOut(BaseModel):
     id: str
     name: str
@@ -38,6 +59,9 @@ class ProjectOut(BaseModel):
     date_end: Optional[str]
     max_temporal_neighbors: int
     storage_path: Optional[str]
+    backup_enabled: bool = True
+    archived_remote: Optional[str] = None
+    archived_at: Optional[datetime] = None
     created_at: datetime
 
     class Config:
@@ -53,6 +77,7 @@ class BatchOut(BaseModel):
     total_pairs: int
     status: str
     auto_download: bool
+    run_mintpy_when_done: bool = False
     created_at: datetime
 
     class Config:
@@ -60,7 +85,18 @@ class BatchOut(BaseModel):
 
 
 class BatchUpdate(BaseModel):
-    auto_download: bool
+    auto_download: Optional[bool] = None
+    label: Optional[str] = Field(None, max_length=80)
+
+    @field_validator("label")
+    @classmethod
+    def _label_not_blank(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        value = value.strip()
+        if not value:
+            raise ValueError("The name cannot be empty")
+        return value
 
 
 # ---------- Job ----------
@@ -106,6 +142,24 @@ class SubmitBatchRequest(BaseModel):
     max_temporal_neighbors: int = 3
     dry_run: bool = True
     auto_download: bool = False
+
+
+class ProjectRefreshRequest(BaseModel):
+    """Extend a project to newer acquisitions and process only what is new."""
+    date_end: Optional[str] = Field(None, description="New end date. Defaults to today. Never moves the end date back.")
+    max_temporal_neighbors: Optional[int] = Field(None, ge=1, le=10)
+    dry_run: bool = True
+    run_mintpy: bool = Field(True, description="Run MintPy once every new interferogram is downloaded")
+
+    _validate_date_end = field_validator("date_end")(_check_iso_date)
+
+
+class ProjectRefreshOut(BaseModel):
+    date_end: str
+    total_pairs: int
+    scene_count: Optional[int] = None
+    estimated_size_gb: Optional[float] = None
+    batch: Optional[BatchOut] = None
 
 
 # ---------- Credentials ----------
@@ -233,6 +287,9 @@ class TimeSeriesOut(BaseModel):
     component instead of one per data source."""
     dates: list[str]        # "YYYYMMDD"
     values_mm: list[float]  # cumulative line-of-sight displacement, in mm
+    # Statistical summary (see insar_core.analysis.timeseries); None when the
+    # series has too few valid observations or the analysis failed.
+    analysis: Optional[dict[str, Any]] = None
 
 
 # ---------- Downloads inventory (ASF/HyP3 side) ----------
@@ -271,4 +328,66 @@ class MoveStateOut(BaseModel):
     pct: float
     src: Optional[str] = None
     dst: Optional[str] = None
+    error: Optional[str] = None
+
+
+# ---------- Backup ----------
+
+class BackupConfigIn(BaseModel):
+    destination: Optional[str] = Field(
+        None, description="Absolute local path, or <rclone remote>:<path>. Empty clears it."
+    )
+    enabled: bool = False
+    interval_hours: int = Field(24, ge=1, le=24 * 30)
+    keep_daily: int = Field(14, ge=1, le=365)
+    keep_weekly: int = Field(8, ge=0, le=520)
+    include_slc: bool = False
+
+
+class BackupConfigOut(BackupConfigIn):
+    last_run_at: Optional[datetime] = None
+    last_status: Optional[str] = None
+    last_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RcloneInfoOut(BaseModel):
+    available: bool
+    version: Optional[str] = None
+    remotes: list[str] = []
+
+
+class BackupStateOut(BaseModel):
+    running: bool
+    status: str
+    step: Optional[str] = None
+    pct: float = 0
+    error: Optional[str] = None
+
+
+class BackupOverviewOut(BaseModel):
+    rclone: RcloneInfoOut
+    config: BackupConfigOut
+    state: BackupStateOut
+
+
+class BackupTestRequest(BaseModel):
+    destination: str
+
+
+class ArchiveRequest(BaseModel):
+    destination: Optional[str] = Field(
+        None, description="Base rclone destination. Defaults to the backup destination."
+    )
+
+
+class ArchiveStateOut(BaseModel):
+    project_id: Optional[str] = None
+    kind: Optional[str] = None      # "archive" | "restore"
+    active: bool = False
+    status: str = "idle"            # idle | running | done | error
+    step: Optional[str] = None
+    pct: float = 0
     error: Optional[str] = None
