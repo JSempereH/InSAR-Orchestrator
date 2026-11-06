@@ -9,10 +9,13 @@ import { CreditsWidget } from "../components/JobMonitor/CreditsWidget";
 import { MintPyPanel } from "../components/JobMonitor/MintPyPanel";
 import { NewProjectWizard } from "../components/ProjectWizard/NewProjectWizard";
 import { SLCPanel } from "../components/SLC/SLCPanel";
+import { useDialogs } from "../components/Dialogs";
 import { RefreshIcon } from "../components/icons";
 
-export function DashboardPage() {
+export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: string) => void }) {
   const qc = useQueryClient();
+  const { confirm, toast } = useDialogs();
+  const [highlightBatchId, setHighlightBatchId] = useState<string | null>(null);
   const { data: projects } = useQuery({ queryKey: ["projects"], queryFn: projectsApi.list });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
@@ -68,11 +71,28 @@ export function DashboardPage() {
     }
   }, [batches]);
 
+  // A new batch is appended at the bottom of a long list, so bring it into view,
+  // expand it and light it up for a few seconds.
+  async function revealBatch(batchId: string) {
+    await refetchBatches();
+    setExpandedBatchIds((prev) => new Set([...prev, batchId]));
+    setHighlightBatchId(batchId);
+    window.setTimeout(() => {
+      document.getElementById(`batch-${batchId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+    window.setTimeout(() => setHighlightBatchId((cur) => (cur === batchId ? null : cur)), 6000);
+  }
+
   const submitMut = useMutation({
     mutationFn: async (projectId: string) => {
       const plan = await jobsApi.plan(projectId, { dry_run: true, max_temporal_neighbors: activeProject?.max_temporal_neighbors ?? 3 });
       const sizeNote = plan.estimated_size_gb != null ? `\n≈ ${plan.estimated_size_gb} GB estimated once downloaded.` : "";
-      if (!confirm(`Submit ${plan.total_pairs} pairs to HyP3?\nThis will consume HyP3 processing credits.${sizeNote}`)) throw new Error("cancelled");
+      const ok = await confirm({
+        title: `Submit ${plan.total_pairs} pairs to HyP3?`,
+        message: `This will consume HyP3 processing credits.${sizeNote}`,
+        confirmLabel: "Submit batch",
+      });
+      if (!ok) throw new Error("cancelled");
       return jobsApi.submit(projectId, {
         dry_run: false,
         max_temporal_neighbors: activeProject?.max_temporal_neighbors ?? 3,
@@ -80,9 +100,60 @@ export function DashboardPage() {
       });
     },
     onSuccess: (batch) => {
-      refetchBatches();
-      setExpandedBatchIds((prev) => new Set([...prev, batch.id]));
+      toast({
+        title: "Batch created",
+        message: `${batch.label ?? "New batch"}: ${batch.total_pairs} pairs are being sent to HyP3.`,
+        actionLabel: "Show batch",
+        onAction: () => revealBatch(batch.id),
+      });
+      revealBatch(batch.id);
     },
+  });
+
+  const refreshMut = useMutation({
+    mutationFn: async (projectId: string) => {
+      const plan = await projectsApi.refresh(projectId, { dry_run: true });
+      if (plan.total_pairs === 0) {
+        toast({
+          tone: "info",
+          title: "Already up to date",
+          message: `No new Sentinel-1 pairs through ${plan.date_end}, so nothing was submitted.`,
+        });
+        throw new Error("cancelled");
+      }
+      const sizeNote = plan.estimated_size_gb != null ? `\n≈ ${plan.estimated_size_gb} GB estimated once downloaded.` : "";
+      const ok = await confirm({
+        title: `Update to ${plan.date_end}?`,
+        message:
+          `${plan.total_pairs} new pairs will be submitted to HyP3 as a new batch.\n` +
+          `Existing pairs are not reprocessed. New results download automatically and MintPy runs once they are all on disk.\n` +
+          `This will consume HyP3 processing credits.${sizeNote}`,
+        confirmLabel: `Submit ${plan.total_pairs} pairs`,
+      });
+      if (!ok) throw new Error("cancelled");
+      return projectsApi.refresh(projectId, { dry_run: false, run_mintpy: true });
+    },
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      const batch = result.batch;
+      if (batch) {
+        toast({
+          title: "Update started",
+          message: `New batch "${batch.label}" with ${batch.total_pairs} pairs, up to ${result.date_end}. It appears at the bottom of the list.`,
+          actionLabel: "Show batch",
+          onAction: () => revealBatch(batch.id),
+        });
+        revealBatch(batch.id);
+      } else {
+        refetchBatches();
+      }
+    },
+  });
+
+  const renameMut = useMutation({
+    mutationFn: ({ batchId, label }: { batchId: string; label: string }) => batchesApi.rename(batchId, label),
+    onSuccess: () => refetchBatches(),
+    onError: (err) => toast({ tone: "error", title: "Could not rename", message: String(err) }),
   });
 
   const autoDownloadMut = useMutation({
@@ -189,9 +260,15 @@ export function DashboardPage() {
                 className="btn btn-ghost btn-sm"
                 title="Delete project"
                 style={{ fontSize: 11, padding: "2px 6px", flexShrink: 0, opacity: 0.6 }}
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation();
-                  if (confirm(`Delete "${p.name}"?`)) deleteMut.mutate(p.id);
+                  const ok = await confirm({
+                    title: `Delete "${p.name}"?`,
+                    message: "The project, its batches and job history are removed from the app. Files on disk are not touched.",
+                    confirmLabel: "Delete project",
+                    danger: true,
+                  });
+                  if (ok) deleteMut.mutate(p.id);
                 }}
               >
                 ×
@@ -238,6 +315,14 @@ export function DashboardPage() {
                   Auto-download when done
                 </label>
                 <button
+                  className="btn"
+                  title="Look for new Sentinel-1 acquisitions up to today and process only the new pairs"
+                  disabled={refreshMut.isPending || submitMut.isPending}
+                  onClick={() => refreshMut.mutate(activeProjectId!)}
+                >
+                  {refreshMut.isPending ? "Checking…" : "Update to today"}
+                </button>
+                <button
                   className="btn btn-primary"
                   disabled={submitMut.isPending}
                   onClick={() => submitMut.mutate(activeProjectId!)}
@@ -249,6 +334,12 @@ export function DashboardPage() {
               {submitMut.isError && String(submitMut.error) !== "Error: cancelled" && (
                 <div style={{ padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>
                   Submission failed: {String(submitMut.error)}
+                </div>
+              )}
+
+              {refreshMut.isError && String(refreshMut.error) !== "Error: cancelled" && (
+                <div style={{ padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>
+                  Update failed: {String(refreshMut.error)}
                 </div>
               )}
 
@@ -267,6 +358,8 @@ export function DashboardPage() {
                   queueState={queueState ?? null}
                   onToggle={() => toggleBatch(b.id)}
                   onAutoDownloadChange={(value) => autoDownloadMut.mutate({ batchId: b.id, value })}
+                  onRename={(label) => renameMut.mutate({ batchId: b.id, label })}
+                  highlight={highlightBatchId === b.id}
                 />
               ))}
 
@@ -275,8 +368,7 @@ export function DashboardPage() {
               {!!batches?.length && (
                 <MintPyPanel
                   projectId={activeProjectId!}
-                  projectName={activeProject.name}
-                  geometry={activeProject.geometry}
+                  onOpenViewer={onOpenViewer}
                 />
               )}
             </>
@@ -314,27 +406,27 @@ function DownloadSessionBanner({
     <div style={{
       marginBottom: 18,
       padding: "14px 18px",
-      background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
-      border: "1px solid rgba(34,197,94,0.3)",
+      background: "linear-gradient(135deg, rgba(var(--accent-rgb),0.12) 0%, rgba(255,255,255,0.03) 70%), #0b0f0e",
+      border: "1px solid rgba(61,255,154,0.3)",
       borderRadius: "var(--radius-lg)",
-      boxShadow: "0 0 20px rgba(34,197,94,0.08)",
+      boxShadow: "0 0 20px rgba(61,255,154,0.08)",
     }}>
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <div style={{
           width: 8, height: 8, borderRadius: "50%",
-          background: "#22c55e",
-          boxShadow: "0 0 6px #22c55e",
+          background: "var(--accent)",
+          boxShadow: "0 0 8px var(--accent)",
           animation: "pulse 1.4s ease-in-out infinite",
           flexShrink: 0,
         }} />
-        <span style={{ fontWeight: 700, fontSize: 13, color: "#f1f5f9" }}>
+        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text)" }}>
           Download session in progress
         </span>
         <span style={{
           marginLeft: "auto",
           fontSize: 12,
-          color: "#94a3b8",
+          color: "var(--text-muted)",
           background: "rgba(255,255,255,0.06)",
           padding: "2px 10px",
           borderRadius: 20,
@@ -345,7 +437,7 @@ function DownloadSessionBanner({
           className="btn btn-ghost btn-sm"
           disabled={cancelling}
           onClick={onCancel}
-          style={{ fontSize: 11, color: "#f87171", borderColor: "rgba(248,113,113,0.3)" }}
+          style={{ fontSize: 11, color: "var(--danger)", borderColor: "rgba(248,113,113,0.3)" }}
         >
           {cancelling ? "Cancelling…" : "× Cancel remaining"}
         </button>
@@ -353,11 +445,11 @@ function DownloadSessionBanner({
 
       {/* Current file */}
       {filename && (
-        <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "65%" }} title={filename}>
             {filename}
           </span>
-          <span style={{ flexShrink: 0, marginLeft: 8, color: "#64748b" }}>{label}</span>
+          <span style={{ flexShrink: 0, marginLeft: 8, color: "var(--text-faint)" }}>{label}</span>
         </div>
       )}
 
@@ -366,7 +458,7 @@ function DownloadSessionBanner({
         <div style={{
           height: 16, background: "rgba(255,255,255,0.05)",
           borderRadius: 8, overflow: "hidden",
-          border: "1px solid rgba(34,197,94,0.2)",
+          border: "1px solid rgba(61,255,154,0.2)",
           marginBottom: 10,
         }}>
           <div style={{
@@ -374,9 +466,9 @@ function DownloadSessionBanner({
             transition: "width 0.3s ease",
             background: [
               "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0) 55%)",
-              "linear-gradient(90deg, #15803d, #22c55e)",
+              "linear-gradient(90deg, var(--accent-2), var(--accent))",
             ].join(", "),
-            boxShadow: "0 0 10px rgba(34,197,94,0.5), inset 0 1px 0 rgba(255,255,255,0.15)",
+            boxShadow: "0 0 10px rgba(61,255,154,0.5), inset 0 1px 0 rgba(255,255,255,0.15)",
             display: "flex", alignItems: "center", justifyContent: "flex-end",
             paddingRight: pct > 8 ? 6 : 0,
           }}>
@@ -390,9 +482,9 @@ function DownloadSessionBanner({
       )}
 
       {/* Queue summary */}
-      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "#64748b" }}>
+      <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--text-faint)" }}>
         {state.current_job_id && (
-          <span style={{ color: "#22c55e" }}>
+          <span style={{ color: "var(--accent)" }}>
             Downloading 1 file
           </span>
         )}
@@ -400,7 +492,7 @@ function DownloadSessionBanner({
           <span>{state.pending_count} waiting in queue</span>
         )}
         {state.cancelled && (
-          <span style={{ color: "#f87171" }}>Cancellation requested, finishing current file…</span>
+          <span style={{ color: "var(--danger)" }}>Cancellation requested, finishing current file…</span>
         )}
       </div>
     </div>
@@ -410,7 +502,7 @@ function DownloadSessionBanner({
 // ── BatchCard ────────────────────────────────────────────────────────────────
 
 function BatchCard({
-  batch, projectId, expanded, queueState, onToggle, onAutoDownloadChange,
+  batch, projectId, expanded, queueState, onToggle, onAutoDownloadChange, onRename, highlight,
 }: {
   batch: Batch;
   projectId: string;
@@ -418,22 +510,67 @@ function BatchCard({
   queueState: QueueState | null;
   onToggle: () => void;
   onAutoDownloadChange: (value: boolean) => void;
+  onRename: (label: string) => void;
+  highlight: boolean;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  function startEditing() {
+    setDraft(batch.label ?? "");
+    setEditing(true);
+  }
+  function commit() {
+    const label = draft.trim();
+    setEditing(false);
+    if (label && label !== batch.label) onRename(label);
+  }
+
   return (
-    <div style={{ marginBottom: 12 }}>
+    <div id={`batch-${batch.id}`} style={{ marginBottom: 12 }}>
       <div
         className="card"
         style={{
           padding: "12px 16px", cursor: "pointer",
           display: "flex", alignItems: "center", gap: 12,
-          borderColor: expanded ? "#93c5fd" : "var(--border)",
+          borderColor: expanded || highlight ? "var(--primary-border)" : "var(--border)",
+          boxShadow: highlight ? "0 0 0 1px var(--accent), 0 0 28px rgba(61,255,154,0.35)" : undefined,
+          transition: "box-shadow 0.4s",
           borderRadius: expanded ? "var(--radius-lg) var(--radius-lg) 0 0" : undefined,
         }}
         onClick={onToggle}
       >
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontWeight: 500, fontSize: 13 }}>{batch.label || "Batch"}</span>
+            {editing ? (
+              <input
+                className="input"
+                autoFocus
+                value={draft}
+                maxLength={80}
+                style={{ height: 26, fontSize: 13, width: 240 }}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commit}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commit();
+                  if (e.key === "Escape") setEditing(false);
+                }}
+              />
+            ) : (
+              <>
+                <span style={{ fontWeight: 500, fontSize: 13 }}>{batch.label || "Batch"}</span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  title="Rename this batch"
+                  aria-label="Rename batch"
+                  style={{ padding: "0 6px", fontSize: 12, color: "var(--text-faint)" }}
+                  onClick={(e) => { e.stopPropagation(); startEditing(); }}
+                >
+                  ✎
+                </button>
+              </>
+            )}
             {batch.status === "submitting" && (
               <span style={{
                 display: "inline-flex", alignItems: "center", gap: 5,

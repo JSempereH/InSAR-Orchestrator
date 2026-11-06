@@ -17,9 +17,10 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.database import Base, engine, SessionLocal
-from app.routers import batches, credentials, egms, jobs, mintpy, projects, scenes, slc, storage
+from app import auth
+from app.routers import archive, backup, batches, credentials, egms, jobs, mintpy, projects, scenes, slc, storage
 from app.models import Batch
-from app.services import credits_service
+from app.services import backup_service, credits_service
 from app.services.polling_service import poll_active_jobs, force_poll
 from app.services import download_queue
 
@@ -38,6 +39,20 @@ def _migrate_schema() -> None:
         if "storage_path" not in cols:
             conn.execute(text("ALTER TABLE projects ADD COLUMN storage_path VARCHAR"))
             conn.commit()
+        if "backup_enabled" not in cols:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN backup_enabled BOOLEAN DEFAULT 1 NOT NULL"))
+            conn.commit()
+        if "archived_remote" not in cols:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN archived_remote VARCHAR"))
+            conn.commit()
+        if "archived_at" not in cols:
+            conn.execute(text("ALTER TABLE projects ADD COLUMN archived_at DATETIME"))
+            conn.commit()
+
+        backup_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(backup_config)"))}
+        if backup_cols and "include_slc" not in backup_cols:
+            conn.execute(text("ALTER TABLE backup_config ADD COLUMN include_slc BOOLEAN DEFAULT 0 NOT NULL"))
+            conn.commit()
 
         batch_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(batches)"))}
         if "status" not in batch_cols:
@@ -46,6 +61,9 @@ def _migrate_schema() -> None:
             conn.commit()
         if "auto_download" not in batch_cols:
             conn.execute(text("ALTER TABLE batches ADD COLUMN auto_download BOOLEAN DEFAULT 0 NOT NULL"))
+            conn.commit()
+        if "run_mintpy_when_done" not in batch_cols:
+            conn.execute(text("ALTER TABLE batches ADD COLUMN run_mintpy_when_done BOOLEAN DEFAULT 0 NOT NULL"))
             conn.commit()
 
         # Column(index=True) only takes effect via create_all for a table
@@ -59,6 +77,13 @@ def _migrate_schema() -> None:
 Base.metadata.create_all(bind=engine)
 _migrate_schema()
 
+if not settings.app_password:
+    logger.warning(
+        "APP_PASSWORD is not set: anyone who can reach this port can use the app, including "
+        "your stored HyP3 credentials. Fine on localhost or behind a VPN; set APP_PASSWORD "
+        "(backend/.env) before exposing it any further."
+    )
+
 if not settings.secret_key:
     logger.warning(
         "SECRET_KEY is not set (backend/.env). A key is generated in memory for this "
@@ -69,6 +94,9 @@ if not settings.secret_key:
 
 app = FastAPI(title="InSAR Orchestrator API", version="0.2.0")
 
+# Added before CORS so CORS is the outermost layer: a 401 from the auth check
+# still carries the CORS headers the browser needs to read it.
+app.add_middleware(auth.AuthMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -86,12 +114,16 @@ app.include_router(storage.router)
 app.include_router(egms.router)
 app.include_router(slc.router)
 app.include_router(mintpy.router)
+app.include_router(backup.router)
+app.include_router(archive.router)
+app.include_router(auth.router)
 
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(poll_active_jobs())
     asyncio.create_task(credits_service.poll_credits())
+    asyncio.create_task(backup_service.backup_scheduler())
 
 
 @app.get("/api/health")
@@ -229,3 +261,34 @@ def _batch_snapshot_dict(batch: Batch) -> dict:
         for j in batch.jobs
     ]
     return {"batch_id": batch.id, "jobs": jobs_data}
+
+
+# ── Built frontend ───────────────────────────────────────────────────────────
+# Must stay the last route registered: the catch-all below would shadow any
+# route declared after it.
+
+def mount_frontend(target: FastAPI, directory: str) -> None:
+    """Serve a built single-page app from `directory` on `target`."""
+    from pathlib import Path
+
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    if not directory:
+        return
+    root = Path(directory).resolve()
+    if not (root / "index.html").is_file():
+        logger.warning("FRONTEND_DIR=%s has no index.html; not serving the UI", root)
+        return
+
+    @target.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        if full_path in ("api", "ws") or full_path.startswith(("api/", "ws/")):
+            raise HTTPException(404, "Not found")
+        candidate = (root / full_path).resolve()
+        if full_path and candidate.is_file() and root in candidate.parents:
+            return FileResponse(candidate)
+        return FileResponse(root / "index.html")   # single-page app: unknown paths show the UI
+
+
+mount_frontend(app, settings.frontend_dir)

@@ -92,6 +92,15 @@ class Project(Base):
     # NULL means "use the app-wide default (settings.downloads_dir)".
     storage_path = Column(String, nullable=True)
 
+    # Set while the project's files live only at an rclone destination (see
+    # services/archive_service.py). The local folder (storage_path) is empty or
+    # gone until the project is restored.
+    # When false, scheduled and manual backups skip this project's files.
+    backup_enabled = Column(Boolean, default=True, nullable=False)
+
+    archived_remote = Column(String, nullable=True)
+    archived_at = Column(DateTime, nullable=True)   # naive UTC
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     batches = relationship("Batch", back_populates="project", cascade="all, delete-orphan")
@@ -115,6 +124,9 @@ class Batch(Base):
     # When true, jobs are queued for download automatically as soon as they
     # succeed (checked by the polling loop). Can be toggled while a batch runs.
     auto_download = Column(Boolean, default=False, nullable=False)
+    # When true, the polling loop starts a MintPy run for the project once every
+    # job in this batch has finished and every succeeded one is downloaded.
+    run_mintpy_when_done = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     project = relationship("Project", back_populates="batches")
@@ -164,3 +176,28 @@ class SLCDownload(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     project = relationship("Project", back_populates="slc_downloads")
+
+
+class BackupConfig(Base):
+    """Backup schedule and destination. Always a single row, id "default".
+
+    `destination` is an rclone destination (an absolute local path or
+    `<remote>:<path>`); the remote's own credentials stay in rclone's config.
+    """
+    __tablename__ = "backup_config"
+
+    id = Column(String, primary_key=True, default="default")
+    destination = Column(String, nullable=True)
+    enabled = Column(Boolean, default=False, nullable=False)
+    interval_hours = Column(Integer, default=24, nullable=False)
+    # Database snapshot retention: newest snapshot of each of the last N days
+    # and of each of the last M ISO weeks are kept, everything older is pruned.
+    keep_daily = Column(Integer, default=14, nullable=False)
+    keep_weekly = Column(Integer, default=8, nullable=False)
+    # Raw SLC scenes cost no HyP3 credits (they come straight from ASF) but are
+    # several GB each, so they are left out of backups unless asked for.
+    include_slc = Column(Boolean, default=False, nullable=False)
+
+    last_run_at = Column(DateTime, nullable=True)   # naive UTC
+    last_status = Column(String, nullable=True)     # "ok" | "error"
+    last_message = Column(Text, nullable=True)

@@ -118,3 +118,35 @@ def test_delete_download_data_frees_space_but_keeps_slc_and_history(client):
 def test_delete_download_data_for_nonexistent_project_returns_404(client):
     resp = client.delete("/api/projects/does-not-exist/download-data")
     assert resp.status_code == 404
+
+
+def test_patch_project_extends_date_end(client):
+    created = client.post("/api/projects", json=_project_payload()).json()
+
+    resp = client.patch(f"/api/projects/{created['id']}", json={"date_end": "2023-12-31"})
+    assert resp.status_code == 200
+    assert resp.json()["date_end"] == "2023-12-31"
+    assert client.get(f"/api/projects/{created['id']}").json()["date_end"] == "2023-12-31"
+
+
+def test_patch_project_leaves_unsent_fields_alone(client):
+    created = client.post("/api/projects", json=_project_payload(max_temporal_neighbors=4)).json()
+
+    resp = client.patch(f"/api/projects/{created['id']}", json={"description": "bridge site"})
+    body = resp.json()
+    assert body["description"] == "bridge site"
+    assert body["date_end"] == "2023-06-01"
+    assert body["max_temporal_neighbors"] == 4
+
+
+def test_patch_project_rejects_bad_dates(client):
+    created = client.post("/api/projects", json=_project_payload()).json()
+    url = f"/api/projects/{created['id']}"
+
+    assert client.patch(url, json={"date_end": "not-a-date"}).status_code == 422
+    assert client.patch(url, json={"date_end": "2022-01-01"}).status_code == 422
+    assert client.patch(url, json={"date_end": None}).status_code == 422
+
+
+def test_patch_unknown_project_returns_404(client):
+    assert client.patch("/api/projects/nope", json={"description": "x"}).status_code == 404
