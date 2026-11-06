@@ -48,7 +48,10 @@ def _sdk_job_to_submitted(job) -> SubmittedJob:
         credit_cost=getattr(job, "credit_cost", None),
         error_message="\n".join(getattr(job, "logs", None) or []) or None,
         submitted_at=getattr(job, "request_time", None),
-        completed_at=getattr(job, "expiration_time", None),
+        # HyP3 exposes no completion timestamp (expiration_time is when the
+        # output files are deleted, not when the job finished), so leave it
+        # unset; callers stamp it when they first observe a terminal status.
+        completed_at=None,
     )
 
 

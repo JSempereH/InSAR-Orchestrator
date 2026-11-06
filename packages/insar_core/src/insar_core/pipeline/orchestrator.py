@@ -131,16 +131,23 @@ class InSAROrchestrator:
 
         Uses the processor's bulk lookup (one paginated API call) when it
         supports one, instead of one get_status() call per job - HyP3Adapter
-        does via get_jobs_bulk(); a ProcessorAdapter that only implements
-        get_status() still works, just without the batching.
+        does via get_jobs_bulk(). Jobs the bulk call does not cover (and every
+        job, for a ProcessorAdapter that only implements get_status()) fall
+        back to one get_status() call each.
         """
+        by_id: Dict[str, SubmittedJob] = {}
         get_jobs_bulk = getattr(self._processor, "get_jobs_bulk", None)
         if callable(get_jobs_bulk):
-            by_id: Dict[str, SubmittedJob] = get_jobs_bulk()  # type: ignore[assignment]
-            return [by_id[jid] for jid in job_ids if jid in by_id]
+            by_id = get_jobs_bulk()  # type: ignore[assignment]
 
+        # The bulk lookup only covers a recent window (HyP3Adapter: the last
+        # 30 days), so any job it did not return is fetched individually
+        # instead of silently disappearing from the result.
         refreshed = []
         for jid in job_ids:
+            if jid in by_id:
+                refreshed.append(by_id[jid])
+                continue
             try:
                 refreshed.append(self._processor.get_status(jid))
             except Exception:
