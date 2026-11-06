@@ -183,7 +183,7 @@ export function NewProjectWizard({ onDone }: { onDone: () => void }) {
                 marginTop: 16,
                 padding: "10px 14px",
                 background: "var(--primary-light)",
-                border: "1px solid #bfdbfe",
+                border: "1px solid var(--primary-border)",
                 borderRadius: "var(--radius)",
                 fontSize: 13,
               }}>

@@ -132,8 +132,8 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
       {needsCredentials && (
         <div style={{
           padding: "12px 16px", marginBottom: 20,
-          background: "var(--warning-light)", border: "1px solid #fed7aa",
-          borderRadius: "var(--radius)", fontSize: 13, color: "#92400e",
+          background: "var(--warning-light)", border: "1px solid var(--warning-border)",
+          borderRadius: "var(--radius)", fontSize: 13, color: "var(--warning)",
           display: "flex", alignItems: "center", gap: 12,
         }}>
           <span style={{ flex: 1 }}>
@@ -230,7 +230,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
           </p>
 
           {products.length === 0 && (
-            <div style={{ padding: 14, background: "var(--warning-light)", border: "1px solid #fed7aa", borderRadius: "var(--radius)", fontSize: 13, color: "#92400e" }}>
+            <div style={{ padding: 14, background: "var(--warning-light)", border: "1px solid var(--warning-border)", borderRadius: "var(--radius)", fontSize: 13, color: "var(--warning)" }}>
               No products cover this AOI for the selected level/release.
             </div>
           )}
@@ -275,7 +275,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
 
               {downloadMut.data?.destination && (
                 <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
-                  💾 Saving to <code style={{ background: "#f1f5f9", padding: "1px 5px", borderRadius: 4 }}>{downloadMut.data.destination}</code>
+                  💾 Saving to <code style={{ background: "var(--panel-hi)", padding: "1px 5px", borderRadius: 4 }}>{downloadMut.data.destination}</code>
                 </div>
               )}
             </>
@@ -293,7 +293,7 @@ function ProductRow({ product, checked, onToggle }: { product: EGMSProduct; chec
         display: "flex", alignItems: "center", gap: 10,
         padding: "8px 12px", borderRadius: "var(--radius)",
         border: "1px solid var(--border)", cursor: "pointer",
-        background: checked ? "var(--primary-light)" : "white",
+        background: checked ? "var(--primary-light)" : "var(--panel)",
       }}
     >
       <input type="checkbox" checked={checked} onChange={onToggle} />

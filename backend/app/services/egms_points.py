@@ -50,14 +50,20 @@ own scan had already passed over that exact row.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import tempfile
+import threading
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+import numpy as np
 import polars as pl
+
+logger = logging.getLogger(__name__)
 
 _LAT_ALIASES = {"latitude", "lat", "y"}
 _LON_ALIASES = {"longitude", "lon", "long", "x"}
@@ -137,6 +143,100 @@ def _write_cache(cache_path: Path, key: dict[str, Any], data: Any) -> None:
         pass  # non-fatal: just means the next call recomputes too
 
 
+class _SeriesStore:
+    """All of one download's time series, held in memory in a compact form.
+
+    The on-disk series cache is one JSON document holding every point's series
+    (tens of MB for a real EGMS tile). Parsing it took a couple of seconds, and
+    it used to happen on *every* point click. The parsed store is kept in
+    memory instead: values as float64 arrays, and the date list shared between
+    all points that have the same dates (normally all of them), so a store of
+    ~15 000 points x ~200 dates is about 25 MB instead of several hundred.
+    """
+
+    def __init__(self, stamp: tuple, data: dict[str, Any]):
+        self.stamp = stamp
+        shared_dates: dict[tuple[str, ...], tuple[str, ...]] = {}
+        self.rows: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
+        for point_id, series in data.items():
+            dates = tuple(series["dates"])
+            dates = shared_dates.setdefault(dates, dates)
+            self.rows[point_id] = (dates, np.asarray(series["values_mm"], dtype=np.float64))
+
+    def get(self, point_id: str) -> Optional[dict[str, Any]]:
+        row = self.rows.get(point_id)
+        if row is None:
+            return None
+        dates, values = row
+        return {"dates": list(dates), "values_mm": values.tolist()}
+
+
+_STORE_MAX_ENTRIES = 2
+_stores: "OrderedDict[str, _SeriesStore]" = OrderedDict()
+_stores_lock = threading.Lock()  # guards _stores
+_load_lock = threading.Lock()  # one slow parse at a time
+
+
+def _load_store(cache_path: Path, key: dict[str, Any]) -> Optional[_SeriesStore]:
+    """The in-memory store for `cache_path`, loading it from disk on first use
+    (or when the file changed since). None if there is no valid cache file."""
+    try:
+        info = cache_path.stat()
+    except OSError:
+        return None
+    stamp = (info.st_mtime_ns, info.st_size, json.dumps(key, sort_keys=True))
+    name = str(cache_path)
+
+    with _stores_lock:
+        store = _stores.get(name)
+        if store is not None and store.stamp == stamp:
+            _stores.move_to_end(name)
+            return store
+
+    with _load_lock:
+        with _stores_lock:  # another request may have finished loading it meanwhile
+            store = _stores.get(name)
+            if store is not None and store.stamp == stamp:
+                return store
+        data = _read_cache(cache_path, key)
+        if data is None:
+            return None
+        store = _SeriesStore(stamp, data)
+        with _stores_lock:
+            _stores[name] = store
+            _stores.move_to_end(name)
+            while len(_stores) > _STORE_MAX_ENTRIES:
+                _stores.popitem(last=False)
+        return store
+
+
+def _remember_store(cache_path: Path, key: dict[str, Any], data: dict[str, Any]) -> None:
+    """Keep freshly built series in memory, right after they were written to
+    disk, so the next click does not read the file back."""
+    try:
+        info = cache_path.stat()
+    except OSError:
+        return
+    store = _SeriesStore((info.st_mtime_ns, info.st_size, json.dumps(key, sort_keys=True)), data)
+    with _stores_lock:
+        _stores[str(cache_path)] = store
+        _stores.move_to_end(str(cache_path))
+        while len(_stores) > _STORE_MAX_ENTRIES:
+            _stores.popitem(last=False)
+
+
+def _warm_store_in_background(destination: Path, key: dict[str, Any]) -> None:
+    """Load the series store right after the map's points are served, so the
+    first point click does not pay the parse."""
+    def _run() -> None:
+        try:
+            _load_store(destination / _TIMESERIES_CACHE_FILENAME, key)
+        except Exception:
+            logger.debug("Could not warm the time series store", exc_info=True)
+
+    threading.Thread(target=_run, name="egms-series-warmup", daemon=True).start()
+
+
 def extract_points(destination: Path, filenames: list[str], geometry: Optional[dict] = None) -> dict[str, Any]:
     """Return a GeoJSON FeatureCollection of points from the given downloaded
     files, restricted to `geometry`'s bounding box when given (EGMS ships
@@ -152,11 +252,13 @@ def extract_points(destination: Path, filenames: list[str], geometry: Optional[d
     cache_path = destination / _CACHE_FILENAME
     cached = _read_cache(cache_path, key)
     if cached is not None:
+        _warm_store_in_background(destination, key)
         return cached
 
     result, series_by_point_id = _build_points_and_series(destination, filenames, geometry)
     _write_cache(cache_path, key, result)
     _write_cache(destination / _TIMESERIES_CACHE_FILENAME, key, series_by_point_id)
+    _remember_store(destination / _TIMESERIES_CACHE_FILENAME, key, series_by_point_id)
     return result
 
 
@@ -178,12 +280,13 @@ def extract_time_series(
     """
     key = _cache_query_key(filenames, geometry)
     cache_path = destination / _TIMESERIES_CACHE_FILENAME
-    cached = _read_cache(cache_path, key)
-    if cached is not None:
-        return cached.get(point_id)
+    store = _load_store(cache_path, key)
+    if store is not None:
+        return store.get(point_id)
 
     _, series_by_point_id = _build_points_and_series(destination, filenames, geometry)
     _write_cache(cache_path, key, series_by_point_id)
+    _remember_store(cache_path, key, series_by_point_id)
     return series_by_point_id.get(point_id)
 
 
