@@ -426,7 +426,8 @@ def test_timeseries_returns_dates_and_values(client, monkeypatch, tmp_path):
 
     resp = client.get(f"/api/egms/downloads/{download_id}/points/P1/timeseries")
     assert resp.status_code == 200
-    assert resp.json() == {"dates": ["20200107", "20200113"], "values_mm": [-0.1, 0.3]}
+    # Two dates are too few for a statistical summary, so it is null.
+    assert resp.json() == {"dates": ["20200107", "20200113"], "values_mm": [-0.1, 0.3], "analysis": None}
 
     resp = client.get(f"/api/egms/downloads/{download_id}/points/does-not-exist/timeseries")
     assert resp.status_code == 404
@@ -475,3 +476,62 @@ def test_extract_functions_against_real_l2b_download():
                 path.unlink(missing_ok=True)
             else:
                 path.write_bytes(original)
+
+
+def _make_long_download(client, monkeypatch, tmp_path, rows: int = 30):
+    """A queued L2B download whose CSV has `rows` dates with a clear linear trend."""
+    monkeypatch.setattr(egms_service, "get_egms_adapter", lambda db: _FakeAdapter())
+    dest_dir = tmp_path / "egms-long-series"
+    dest_dir.mkdir()
+    import datetime as dt
+    dates = [(dt.date(2020, 1, 7) + dt.timedelta(days=12 * i)).strftime("%Y%m%d") for i in range(rows)]
+    values = [f"{-0.5 * i:.2f}" for i in range(rows)]  # -0.5 mm per 12 days
+    (dest_dir / "points.csv").write_text(
+        "pid,latitude,longitude,mean_velocity," + ",".join(dates) + "\n"
+        "P1,49.1,3.2,-15.0," + ",".join(values) + "\n"
+    )
+    monkeypatch.setattr("app.services.egms_download_queue.resolve_destination", lambda mountpoint, name: dest_dir)
+    client.post("/api/egms/downloads/queue", json={
+        "products": [{"query_id": "q1", "filename": "points.csv", "level": "L2B", "size_mb": 0.001}],
+        "destination_name": "Long series",
+        "geometry": _GEOMETRY, "level": "L2B", "release": "2019-2023", "direction": "descending",
+    })
+    return next(d for d in client.get("/api/egms/downloads").json() if d["filenames"] == ["points.csv"])["id"], dest_dir
+
+
+def test_timeseries_includes_statistical_analysis(client, monkeypatch, tmp_path):
+    download_id, _ = _make_long_download(client, monkeypatch, tmp_path)
+
+    body = client.get(f"/api/egms/downloads/{download_id}/points/P1/timeseries").json()
+
+    analysis = body["analysis"]
+    assert analysis is not None
+    assert analysis["n"] == 30 == len(body["dates"])
+    assert analysis["model"]["kind"] == "linear"
+    assert analysis["velocity"]["ols_mm_yr"] == pytest.approx(-0.5 / (12 / 365.25), rel=0.01)  # about -15 mm/yr
+    assert len(analysis["series"]["fit"]) == len(analysis["series"]["dates"]) == 30
+
+
+def test_series_store_is_served_from_memory(client, monkeypatch, tmp_path):
+    """After the first request the parsed series stay in memory: later clicks
+    must not read (and parse) the on-disk JSON again."""
+    download_id, dest_dir = _make_long_download(client, monkeypatch, tmp_path)
+    egms_points._stores.clear()
+    assert client.get(f"/api/egms/downloads/{download_id}/points/P1/timeseries").status_code == 200
+
+    def boom(*args, **kwargs):
+        raise AssertionError("the series cache file was parsed again")
+
+    monkeypatch.setattr(egms_points, "_read_cache", boom)
+    assert client.get(f"/api/egms/downloads/{download_id}/points/P1/timeseries").status_code == 200
+
+
+def test_series_store_reloads_when_the_cache_file_changes(tmp_path):
+    key = egms_points._cache_query_key(["points.csv"], None)
+    cache = tmp_path / ".timeseries_cache.json"
+    egms_points._write_cache(cache, key, {"A": {"dates": ["20200101"], "values_mm": [1.0]}})
+    egms_points._stores.clear()
+    assert egms_points._load_store(cache, key).get("A")["values_mm"] == [1.0]
+
+    egms_points._write_cache(cache, key, {"A": {"dates": ["20200101", "20200113"], "values_mm": [1.0, 2.0]}})
+    assert egms_points._load_store(cache, key).get("A")["values_mm"] == [1.0, 2.0]

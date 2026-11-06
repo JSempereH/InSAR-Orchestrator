@@ -168,3 +168,25 @@ def test_get_disk_usage_is_cached_within_ttl(tmp_path):
 def test_status_for_unknown_project_returns_404(client):
     resp = client.get("/api/projects/does-not-exist/mintpy/status")
     assert resp.status_code == 404
+
+
+def test_status_is_restored_from_disk_for_a_run_this_process_never_saw(client):
+    """Run state is in memory and is lost on a restart, but a finished run's
+    outputs are still on disk: such a project must show as SUCCEEDED."""
+    project = _create_project(client, name="Restored Status Project")
+    _write_geocoded_timeseries(project["storage_path"])
+    _write_geocoded_velocity(project["storage_path"])
+
+    body = client.get(f"/api/projects/{project['id']}/mintpy/status").json()
+
+    assert body["status"] == "SUCCEEDED"
+    assert body["started_at"] is None
+    assert body["finished_at"] is not None
+    assert body["work_dir"].endswith("mintpy")
+
+
+def test_status_is_not_started_when_only_part_of_the_outputs_exist(client):
+    project = _create_project(client, name="Partial Outputs Project")
+    _write_geocoded_timeseries(project["storage_path"])  # no velocity map yet
+
+    assert client.get(f"/api/projects/{project['id']}/mintpy/status").json()["status"] == "NOT_STARTED"

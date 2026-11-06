@@ -10,7 +10,6 @@ disk do survive, in <project storage>/mintpy/).
 from __future__ import annotations
 
 import logging
-import shutil
 import subprocess
 import threading
 import time
@@ -19,8 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from insar_core.pipeline.mintpy_adapter import MintPyAdapter
-from insar_core.pipeline.mintpy_timeseries import read_point_time_series, read_velocity_points
+from insar_core.pipeline.mintpy_adapter import MintPyAdapter, find_smallbaseline
+from insar_core.pipeline.mintpy_timeseries import (
+    locate_timeseries_file, locate_velocity_file, read_point_time_series, read_velocity_points,
+)
+
+from app.services.series_analysis import with_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +43,11 @@ class MintPyRunState:
     error: Optional[str] = None
     work_dir: str = ""
     process: Optional[subprocess.Popen] = None  # not serialized to API responses
+    cancel_requested: bool = False
 
 
 def mintpy_available() -> bool:
-    return shutil.which("smallbaselineApp.py") is not None
+    return find_smallbaseline() is not None
 
 
 def _dir_size_bytes(path: Path) -> int:
@@ -104,13 +108,43 @@ def _compute_disk_usage(downloads_dir: Path) -> dict:
     }
 
 
+def _restored_status(downloads_dir: Path, disk_usage: Optional[dict]) -> Optional[dict]:
+    """A SUCCEEDED status rebuilt from files, for a run this process never saw.
+
+    Run state lives in memory, so a backend restart (or a dev auto-reload)
+    forgets every finished run even though its outputs are still on disk. A
+    project whose work directory holds both the time series and the velocity
+    map is viewable, so it is reported as SUCCEEDED instead of NOT_STARTED."""
+    work_dir = downloads_dir / "mintpy"
+    try:
+        locate_timeseries_file(work_dir)
+        velocity = locate_velocity_file(work_dir)
+    except FileNotFoundError:
+        return None
+    log_path = work_dir / "mintpy.log"
+    log_tail = ""
+    if log_path.exists():
+        log_tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-_LOG_TAIL_LINES:])
+    return {
+        "status": "SUCCEEDED",
+        "started_at": None,
+        "finished_at": datetime.fromtimestamp(velocity.stat().st_mtime, tz=timezone.utc).isoformat(),
+        "return_code": None,
+        "error": None,
+        "work_dir": str(work_dir),
+        "log_tail": log_tail,
+        "disk_usage": disk_usage,
+    }
+
+
 def get_status(project_id: str, downloads_dir: Optional[Path] = None) -> dict:
     disk_usage = get_disk_usage(downloads_dir) if downloads_dir is not None else None
 
     with _lock:
         state = _runs.get(project_id)
     if state is None:
-        return {"status": "NOT_STARTED", "disk_usage": disk_usage}
+        restored = _restored_status(downloads_dir, disk_usage) if downloads_dir is not None else None
+        return restored or {"status": "NOT_STARTED", "disk_usage": disk_usage}
     log_path = Path(state.work_dir) / "mintpy.log"
     log_tail = ""
     if log_path.exists():
@@ -138,8 +172,8 @@ def start_run(project_id: str, downloads_dir: Path, geometry: Optional[dict] = N
                 "smallbaselineApp.py was not found on PATH. Install MintPy on this "
                 "machine (pip install mintpy) to run SBAS analysis."
             )
-        if not any(downloads_dir.glob("*.zip")) and not any(
-            p.is_dir() for p in downloads_dir.iterdir() if p.exists()
+        if not downloads_dir.is_dir() or (
+            not any(downloads_dir.glob("*.zip")) and not any(p.is_dir() for p in downloads_dir.iterdir())
         ):
             raise RuntimeError(f"No downloaded interferograms found in {downloads_dir}")
 
@@ -161,7 +195,7 @@ def get_time_series(downloads_dir: Path, lat: float, lon: float) -> dict:
     backend restart as long as the files are still there."""
     work_dir = downloads_dir / "mintpy"
     try:
-        return read_point_time_series(work_dir, lat, lon)
+        return with_analysis(read_point_time_series(work_dir, lat, lon))
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
 
@@ -182,6 +216,8 @@ def cancel_run(project_id: str) -> dict:
         if state is None or state.status != "RUNNING":
             raise RuntimeError("No running MintPy job for this project")
         process = state.process
+        # Seen by _run if the MintPy process has not been started yet.
+        state.cancel_requested = True
     if process is not None:
         process.terminate()
     with _lock:
@@ -190,14 +226,27 @@ def cancel_run(project_id: str) -> dict:
     return get_status(project_id)
 
 
+def _cancel_requested(project_id: str) -> bool:
+    with _lock:
+        state = _runs.get(project_id)
+        return state is not None and state.cancel_requested
+
+
 def _run(project_id: str, downloads_dir: Path, work_dir: Path, geometry: Optional[dict]) -> None:
     adapter = MintPyAdapter(downloads_dir=downloads_dir, work_dir=work_dir)
     try:
         adapter.unzip_all(geometry=geometry)
+        if _cancel_requested(project_id):
+            return
         config_path = adapter.write_config(geometry=geometry)
         process = adapter.start_full_pipeline(config_path=config_path)
         with _lock:
-            _runs[project_id].process = process
+            state = _runs[project_id]
+            state.process = process
+            cancelled = state.cancel_requested
+        if cancelled:
+            # Cancelled while the process was being launched: stop it now.
+            process.terminate()
         return_code = process.wait()
         with _lock:
             state = _runs[project_id]
