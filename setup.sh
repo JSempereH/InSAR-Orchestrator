@@ -51,6 +51,11 @@ fi
 echo "==> Installing frontend dependencies"
 npm install --prefix frontend
 
+if ! command -v rclone >/dev/null 2>&1; then
+    echo "==> Note: rclone is not installed. It is only needed for backups and archiving"
+    echo "    to S3, a mounted disk or another computer. See https://rclone.org/install/"
+fi
+
 cat <<'EOF'
 
 ==> Done!
