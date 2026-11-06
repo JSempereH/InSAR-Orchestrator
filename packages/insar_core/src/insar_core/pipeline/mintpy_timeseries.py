@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -172,7 +173,7 @@ def read_velocity_points(work_dir: Path) -> dict:
     with h5py.File(path, "r") as f:
         geo = _read_geocoding(f)
         length, width = geo["length"], geo["width"]
-        step = max(1, int((length * width / _MAX_POINTS) ** 0.5))
+        step = max(1, math.ceil((length * width / _MAX_POINTS) ** 0.5))
         grid = np.asarray(f["velocity"][::step, ::step])
 
     # Build every kept pixel's native (x, y) first - e.g. UTM meters, per the
@@ -194,6 +195,6 @@ def read_velocity_points(work_dir: Path) -> dict:
             "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},
             "properties": {"velocity": float(grid[r, c]) * _METERS_TO_MM},
         }
-        for r, c, lon, lat in zip(rows, cols, lons, lats)
+        for r, c, lon, lat in zip(rows, cols, lons, lats, strict=True)
     ]
     return {"type": "FeatureCollection", "features": features[:_MAX_POINTS]}
