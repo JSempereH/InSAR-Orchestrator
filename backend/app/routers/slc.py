@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Project, SLCDownload
 from app.schemas import SceneOut, SLCDownloadOut, SLCDownloadRequest
-from app.services import slc_download_queue
+from app.services import archive_service, slc_download_queue
 from app.services.hyp3_service import get_earthdata_credentials
 from insar_core.adapters.asf import ASFAdapter
 from insar_core.models.scene import AOI, SearchParams
@@ -72,6 +72,7 @@ def list_slc_scenes(project_id: str, db: Session = Depends(get_db)):
 @router.post("/api/projects/{project_id}/slc/downloads/queue", response_model=SLCDownloadOut, status_code=201)
 def queue_slc_downloads(project_id: str, body: SLCDownloadRequest, db: Session = Depends(get_db)):
     project = _get_project(project_id, db)
+    archive_service.reject_if_archived(project)
     if not body.scenes:
         raise HTTPException(400, "No scenes selected")
 

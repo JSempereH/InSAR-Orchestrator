@@ -20,7 +20,8 @@ from app.config import settings
 from app.database import get_db
 from app.models import Project
 from app.schemas import TimeSeriesOut
-from app.services import mintpy_service
+from app.services import archive_service, mintpy_service
+from app.services.json_response import json_response
 
 router = APIRouter(prefix="/api/projects", tags=["mintpy"])
 
@@ -39,6 +40,7 @@ def _downloads_dir(project: Project) -> Path:
 @router.post("/{project_id}/mintpy/run")
 def run_mintpy(project_id: str, db: Session = Depends(get_db)):
     project = _project_or_404(db, project_id)
+    archive_service.reject_if_archived(project)
     downloads_dir = _downloads_dir(project)
     if not downloads_dir.exists():
         raise HTTPException(422, f"Storage destination does not exist: {downloads_dir}")
@@ -66,6 +68,7 @@ def cancel_mintpy(project_id: str, db: Session = Depends(get_db)):
 @router.get("/{project_id}/mintpy/timeseries", response_model=TimeSeriesOut)
 def mintpy_time_series(project_id: str, lat: float, lon: float, db: Session = Depends(get_db)):
     project = _project_or_404(db, project_id)
+    archive_service.reject_if_archived(project)
     try:
         return mintpy_service.get_time_series(_downloads_dir(project), lat, lon)
     except RuntimeError as exc:
@@ -78,7 +81,8 @@ def mintpy_points(project_id: str, db: Session = Depends(get_db)):
     request a time series from the endpoint above - mirrors GET
     /api/egms/downloads/{id}/points, but for MintPy's own SBAS grid."""
     project = _project_or_404(db, project_id)
+    archive_service.reject_if_archived(project)
     try:
-        return mintpy_service.get_points(_downloads_dir(project))
+        return json_response(mintpy_service.get_points(_downloads_dir(project)))
     except RuntimeError as exc:
         raise HTTPException(422, str(exc)) from exc
