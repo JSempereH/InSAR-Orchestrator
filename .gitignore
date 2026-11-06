@@ -6,6 +6,8 @@
 
 # Databases
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -53,3 +55,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Database snapshots from `make backup-db` (they hold encrypted credentials)
+backups/
+
+# Everything the container stores (database, downloads, keys); see compose.yaml
+data/

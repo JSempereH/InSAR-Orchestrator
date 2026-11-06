@@ -7,6 +7,11 @@ A self-hosted, end-to-end InSAR processing platform for Sentinel-1 data. Instead
 
 This tool is designed with research in mind. This is **not** a production tool, no warranty guaranteed.
 
+[![The pipeline, step by step](docs/images/pipeline.gif)](docs/images/pipeline.mp4)
+
+**New here? Read the [Guide](docs/guide.md).**
+
+
 ---
 
 ## Architecture
@@ -26,7 +31,7 @@ insar-orchestrator/
 └── frontend/              # React 18 + Vite SPA
     └── src/
         ├── components/    # AOI/downloads maps (MapLibre), job monitor, SLC panel, project wizard
-        └── pages/         # Dashboard (ASF/HyP3), Ground Motion (EGMS), Downloads, Settings
+        └── pages/         # Dashboard (ASF/HyP3), Ground Motion (EGMS), Viewer, Downloads, Settings
 ```
 
 This repo is scoped to InSAR: draw an AOI, discover tracks, submit pairs to
@@ -40,8 +45,7 @@ HyP3, monitor jobs, run MintPy SBAS on the results.
 |---|---|---|
 | Python | ≥ 3.11 | For backend + core library |
 | Node.js | ≥ 18 | For frontend |
-| MintPy | ≥ 1.6.3 | Only needed for local SBAS analysis (`smallbaselineApp.py` must be in `PATH`) |
-| GDAL | 3.8.4 (match your system's `gdalinfo --version`) | Needed by `insar_core`'s MintPy adapter (cropping downloaded GeoTIFFs to a project's AOI). `pip install GDAL==<version>` alone usually fails to build the `osgeo` bindings against your system libgdal; install with `pip install --no-build-isolation --no-binary GDAL GDAL==<version>` instead, matching the exact version `gdalinfo --version` reports |
+| MintPy | ≥ 1.6.3 | Only needed for local SBAS analysis. It is found on `PATH` or in `backend/.venv` (`uv pip install --python backend/.venv mintpy`) |
 | NASA Earthdata account | — | Free at [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov/users/new) |
 
 ---
@@ -160,17 +164,62 @@ Key endpoints (see `/docs` for the full, generated list):
 | POST | `/api/egms/search` | Search EGMS ground-motion products covering an AOI |
 | POST | `/api/egms/downloads/queue` | Queue EGMS products for download |
 | GET | `/api/egms/downloads/{id}/points` | Downloaded EGMS product as GeoJSON points (velocity per point), for map display |
-| GET | `/api/egms/downloads/{id}/points/{point_id}/timeseries` | Displacement time series for one point (L2A/L2B downloads only) |
+| GET | `/api/egms/downloads/{id}/points/{point_id}/timeseries` | Displacement time series for one point, with its statistical summary in `analysis` (L2A/L2B downloads only) |
 | GET | `/api/storage/targets` | Mounted disks a project's downloads can be pinned to, with free space |
 | PUT | `/api/credentials` | Store encrypted Earthdata or EGMS credentials |
 | GET | `/api/credits` | Last known HyP3 credit balance, refreshed every 5 min (shown live in the dashboard) |
 | POST | `/api/projects/{id}/mintpy/run` | Run MintPy SBAS over a project's downloaded interferograms (finishes the InSAR pipeline in-app; requires MintPy on this host) |
 | GET | `/api/projects/{id}/mintpy/status` | Run status, log tail, and a disk-usage breakdown (raw zips vs cropped vs MintPy output) |
-| GET | `/api/projects/{id}/mintpy/timeseries?lat=&lon=` | Displacement time series for the pixel nearest (lat, lon) in a finished MintPy run |
+| GET | `/api/projects/{id}/mintpy/timeseries?lat=&lon=` | Displacement time series for the pixel nearest (lat, lon) in a finished MintPy run, with its statistical summary in `analysis` |
 | GET | `/api/projects/{id}/mintpy/points` | Decimated MintPy velocity points as GeoJSON, for map display |
 | WS | `/ws/batches/{id}` | Real-time job status stream |
 
 ---
+
+## MintPy runs and AOI cropping
+
+"Run MintPy SBAS" first prepares the downloaded HyP3 interferograms, then runs
+`smallbaselineApp.py` over them. The preparation step matters for disk usage:
+
+- **Only what MintPy reads is extracted.** From each HyP3 zip, the six rasters
+  MintPy loads (`unw_phase`, `corr`, `dem`, `lv_theta`, `lv_phi`, `water_mask`)
+  and the `<product>.txt` metadata file. Browse images, KMZs and READMEs are skipped.
+- **Rasters are cropped to the project's AOI**, padded by 25% of its size (at
+  least about 500 m) so MintPy can pick a stable reference point. The crop
+  keeps the native pixel grid and values (no resampling) and is written
+  DEFLATE-compressed. A HyP3 scene covers hundreds of km and a typical AOI a few,
+  so this turns tens of GB into hundreds of MB.
+- **The source zip is deleted once all its files were cropped successfully.**
+  This is why a project's *Size* in Downloads can be far smaller than what was
+  downloaded (for example 261/261 interferograms, 0.1 GB). The values shown are
+  what is on disk now.
+- **The crop cannot be redone with a different AOI.** To process another area,
+  download the products again.
+- **It is safe to re-run.** Each zip is extracted into a hidden `.<name>.partial`
+  directory and renamed into place only when complete, so a failure never
+  leaves a half-extracted directory. Zips that already have an output directory
+  are skipped, and zips are processed in parallel (up to 4 at a time).
+
+The MintPy output goes to `<project downloads dir>/mintpy/`. `GET
+/api/projects/{id}/mintpy/status` reports the disk usage split between raw zips,
+cropped data and MintPy output.
+
+MintPy is found on `PATH` or next to the Python that runs the backend, so
+installing it in `backend/.venv` is enough even if the venv is not activated.
+
+## Time series analysis
+
+For every point you open, the viewer summarizes how the series behaves: a pattern label (steady subsidence, accelerating uplift, trend reversal, abrupt shift and so on) with the date of any change, the velocity with its uncertainty, the maximum, minimum and net change, seasonality, noise and outliers. The statistics are computed by the library (`insar_core.analysis`, numpy only) on the backend, in the same request that reads the series, and come back in the `analysis` field of both time series endpoints. A point click takes about 30 ms from click to chart.
+
+```python
+from insar_core.analysis import analyze_time_series
+
+result = analyze_time_series(dates, values_mm)  # dates as "YYYYMMDD" or ISO; None if fewer than 8 valid points
+print(result["model"]["label"])                  # e.g. "Trend reversal"
+print(result["narrative"])                       # plain-language sentences
+```
+
+What each number means, how the pattern is chosen, the limits of the method and the references are in [docs/time-series-analysis.md](docs/time-series-analysis.md).
 
 ## Running the frontend
 
@@ -194,25 +243,27 @@ npm run build   # outputs to frontend/dist/
 
 ---
 
-## Running everything in containers
+## Running it on a server
 
-`Dockerfile`s exist for `backend/` and `frontend/`, tied together by this
-repo's own `docker-compose.yml`:
+One container image holds the web app, the API, MintPy and rclone, runs as an ordinary user and keeps everything in `./data`:
 
 ```bash
-cp backend/.env.example backend/.env   # fill in SECRET_KEY
-docker compose up --build
+cp .env.example .env     # set APP_PASSWORD
+docker compose up -d     # or: podman compose up -d
 ```
 
-Or via this repo's own `Makefile`: `make docker-build` / `make docker-up`.
-The backend image doesn't bundle MintPy - it's a large, separate scientific
-stack you'd add explicitly if you want SBAS runs to happen inside the
-container rather than on the host.
+There is also a no-container install as a systemd user service. See [docs/deploy.md](docs/deploy.md) for both, for exposing it safely (VPN or HTTPS) and for rootless setups.
 
 CI (`.github/workflows/ci.yml`) lints and tests `insar_core`, the backend,
 and the frontend build on every push/PR.
 
 ---
+
+## Docs
+
+New here? Start with the **[Guide](docs/guide.md)**: install, credentials, how the ASF and EGMS ways work, and how to move and back up your data. To understand the time series window, read [Reading a time series](docs/time-series-analysis.md).
+
+Working on the docs? The screenshots, the figure and the animation in `docs/images/` are generated: `make docs` regenerates them from the running app and previews the guides locally. See [Maintaining the docs](docs/maintaining-docs.md).
 
 ## Using `insar_core` as a standalone library
 
@@ -268,9 +319,19 @@ products = egms.search(EGMSSearchParams(aoi=aoi, level="L3", release="2019-2023"
 
 ## Screenshots
 
-| ASF / HyP3 job monitor | Downloads overview |
-|---|---|
-| ![ASF panel](docs/images/asf-panel-example.png) | ![Downloads panel](docs/images/download-panel-example.png) |
+**ASF / HyP3 job monitor.** Projects, batches and per-pair status in one place.
+
+![ASF panel](docs/images/asf-panel.png)
+
+**Viewer.** One map for everything you have on disk. Explore ASF or EGMS time series (ASF requires running MintPy first).
+
+![Viewer with a MintPy dataset: a subsidence cluster and a steady trend](docs/images/viewer-mintpy.png)
+
+![Viewer with an EGMS dataset: an abrupt shift detected in the series](docs/images/viewer-egms.png)
+
+**Downloads.** Disk usage and where each product lives, with move and delete actions and a shortcut to open any dataset in the viewer.
+
+![Downloads panel](docs/images/downloads-panel.png)
 
 ---
 
