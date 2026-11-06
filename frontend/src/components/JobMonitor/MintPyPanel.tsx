@@ -1,15 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
-import { useState } from "react";
 import { mintpyApi } from "../../api/client";
-import { DownloadsMap } from "../Map/DownloadsMap";
 import { LoadingDots } from "../LoadingDots";
-import { TimeSeriesChart } from "../TimeSeriesChart";
 
 interface MintPyPanelProps {
   projectId: string;
-  projectName: string;
-  geometry: GeoJSON.Geometry;
+  onOpenViewer: (datasetId: string) => void;
 }
 
 const RUNNING_POLL_MS = 5_000;
@@ -50,12 +46,8 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(1)} ${units[unitIndex]}`;
 }
 
-export function MintPyPanel({ projectId, projectName, geometry }: MintPyPanelProps) {
+export function MintPyPanel({ projectId, onOpenViewer }: MintPyPanelProps) {
   const qc = useQueryClient();
-  const [latInput, setLatInput] = useState("");
-  const [lonInput, setLonInput] = useState("");
-  const [queriedPoint, setQueriedPoint] = useState<{ lat: number; lon: number } | null>(null);
-
   const { data: status } = useQuery({
     queryKey: ["mintpy-status", projectId],
     queryFn: () => mintpyApi.status(projectId),
@@ -63,26 +55,6 @@ export function MintPyPanel({ projectId, projectName, geometry }: MintPyPanelPro
   });
 
   const succeeded = status?.status === "SUCCEEDED";
-
-  const pointsQuery = useQuery({
-    queryKey: ["mintpy-points", projectId],
-    queryFn: () => mintpyApi.getPoints(projectId),
-    enabled: succeeded,
-  });
-
-  const timeSeriesQuery = useQuery({
-    queryKey: ["mintpy-timeseries", projectId, queriedPoint],
-    queryFn: () => mintpyApi.getTimeSeries(projectId, queriedPoint!.lat, queriedPoint!.lon),
-    enabled: !!queriedPoint,
-  });
-
-  function onMapPointClick(feature: GeoJSON.Feature) {
-    if (feature.geometry.type !== "Point") return;
-    const [lon, lat] = feature.geometry.coordinates;
-    setLatInput(String(lat));
-    setLonInput(String(lon));
-    setQueriedPoint({ lat, lon });
-  }
 
   const runMut = useMutation({
     mutationFn: () => mintpyApi.run(projectId),
@@ -202,71 +174,19 @@ export function MintPyPanel({ projectId, projectName, geometry }: MintPyPanelPro
       )}
 
       {status?.status === "SUCCEEDED" && (
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Displacement time series at a point</div>
-
-          {pointsQuery.isError ? (
-            <div style={{ marginBottom: 10, fontSize: 12, color: "var(--danger)" }}>
-              {String(
-                (pointsQuery.error as AxiosError<{ detail?: string }>)?.response?.data?.detail ?? pointsQuery.error
-              )}
+        <div style={{
+          marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border)",
+          display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+        }}>
+          <div style={{ flex: 1, minWidth: 220 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Results are ready</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+              Explore the velocity map and the displacement time series of any point in the viewer.
             </div>
-          ) : pointsQuery.isFetching ? (
-            <div style={{ marginBottom: 10 }}>
-              <LoadingDots label="Reading velocity.h5…" />
-            </div>
-          ) : (
-            <div style={{ marginBottom: 10 }}>
-              <DownloadsMap
-                footprints={[{ id: projectId, source: "asf", label: projectName, geometry }]}
-                points={pointsQuery.data ?? null}
-                selectedId={projectId}
-                onSelect={() => {}}
-                onPointClick={onMapPointClick}
-                height={360}
-              />
-            </div>
-          )}
-
-          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 8 }}>
-            Click a point above, or enter coordinates directly:
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <input
-              className="input" style={{ width: 110 }} type="number" step="any"
-              placeholder="Latitude" value={latInput} onChange={(e) => setLatInput(e.target.value)}
-            />
-            <input
-              className="input" style={{ width: 110 }} type="number" step="any"
-              placeholder="Longitude" value={lonInput} onChange={(e) => setLonInput(e.target.value)}
-            />
-            <button
-              className="btn btn-secondary btn-sm"
-              disabled={!latInput || !lonInput || timeSeriesQuery.isFetching}
-              onClick={() => setQueriedPoint({ lat: parseFloat(latInput), lon: parseFloat(lonInput) })}
-            >
-              Get time series
-            </button>
-            {timeSeriesQuery.isFetching && <LoadingDots label="Reading timeseries.h5…" />}
-          </div>
-
-          {timeSeriesQuery.isError && (
-            <div style={{ marginTop: 10, fontSize: 12, color: "var(--danger)" }}>
-              {String(
-                (timeSeriesQuery.error as AxiosError<{ detail?: string }>)?.response?.data?.detail ?? timeSeriesQuery.error
-              )}
-            </div>
-          )}
-
-          {timeSeriesQuery.data && (
-            <div style={{ marginTop: 12 }}>
-              <TimeSeriesChart
-                dates={timeSeriesQuery.data.dates}
-                valuesMm={timeSeriesQuery.data.values_mm}
-                title={`Point (${queriedPoint!.lat}, ${queriedPoint!.lon})`}
-              />
-            </div>
-          )}
+          <button className="btn btn-primary btn-sm" onClick={() => onOpenViewer(projectId)}>
+            Open in viewer
+          </button>
         </div>
       )}
     </div>

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { DownloadProgress, Job, QueueState, downloadQueueApi, jobsApi } from "../../api/client";
+import { useDialogs } from "../Dialogs";
 
 const BADGE: Record<string, string> = {
   PENDING:   "badge-pending",
@@ -23,6 +24,7 @@ interface JobTableProps {
 
 export function JobTable({ projectId, batchId, queueState, totalPairs, submitting }: JobTableProps) {
   const qc = useQueryClient();
+  const { confirm } = useDialogs();
   const interval = submitting ? SUBMITTING_REFETCH_INTERVAL : REFETCH_INTERVAL;
   const [countdown, setCountdown] = useState(interval / 1000);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -87,9 +89,12 @@ export function JobTable({ projectId, batchId, queueState, totalPairs, submittin
   const queueSelectedMut = useMutation({
     mutationFn: async (toQueue: { job_id: string; hyp3_job_id: string }[]) => {
       if (queueState?.active) {
-        if (!confirm(`A download is already in progress. This will replace the pending queue with ${toQueue.length} new jobs. Continue?`)) {
-          throw new Error("cancelled");
-        }
+        const ok = await confirm({
+          title: "Replace the download queue?",
+          message: `A download is already in progress. This will replace the pending queue with ${toQueue.length} new jobs. The file being downloaded now is not interrupted.`,
+          confirmLabel: "Replace queue",
+        });
+        if (!ok) throw new Error("cancelled");
       }
       return downloadQueueApi.start(toQueue);
     },
@@ -309,9 +314,9 @@ const JobRow = memo(function JobRow({
   const hasError = !!job.error_message;
 
   const rowBg = isCurrentlyDownloading
-    ? "rgba(34,197,94,0.07)"
+    ? "rgba(61,255,154,0.08)"
     : isInQueue
-    ? "rgba(99,102,241,0.05)"
+    ? "rgba(255,255,255,0.04)"
     : selected
     ? "var(--primary-light)"
     : undefined;
@@ -376,7 +381,7 @@ const JobRow = memo(function JobRow({
         </td>
         <td>
           {isCurrentlyDownloading ? (
-            <span style={{ fontSize: 11, color: "#22c55e", fontWeight: 600 }}>↓ dl…</span>
+            <span style={{ fontSize: 11, color: "var(--accent)", fontWeight: 600 }}>↓ dl…</span>
           ) : isInQueue ? (
             <span style={{ fontSize: 11, color: "var(--text-faint)" }}>in queue</span>
           ) : job.status === "SUCCEEDED" && job.hyp3_job_id ? (
@@ -432,7 +437,7 @@ const JobRow = memo(function JobRow({
                     </div>
                     {logContent[url] && (
                       <pre style={{
-                        margin: 0, fontSize: 11, color: "var(--text)", background: "#1e293b",
+                        margin: 0, fontSize: 11, color: "var(--text)", background: "rgba(0,0,0,0.45)",
                         padding: "10px 12px", borderRadius: "var(--radius)",
                         whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: 400, overflowY: "auto",
                       }}>
@@ -459,15 +464,15 @@ function InlineProgressBar({ progress }: { progress: DownloadProgress }) {
   return (
     <div style={{
       height: 14, background: "rgba(0,0,0,0.1)", borderRadius: 7, overflow: "hidden",
-      border: "1px solid rgba(34,197,94,0.2)",
+      border: "1px solid rgba(61,255,154,0.2)",
     }}>
       <div style={{
         height: "100%", width: `${pct}%`, borderRadius: 7, transition: "width 0.3s ease",
         background: [
           "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0) 55%)",
-          "linear-gradient(90deg, #15803d, #22c55e)",
+          "linear-gradient(90deg, var(--accent-2), var(--accent))",
         ].join(", "),
-        boxShadow: "0 0 6px rgba(34,197,94,0.4)",
+        boxShadow: "0 0 6px rgba(61,255,154,0.4)",
         display: "flex", alignItems: "center", justifyContent: "flex-end",
         paddingRight: pct > 12 ? 5 : 0,
       }}>

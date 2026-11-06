@@ -1,26 +1,22 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  egmsApi, projectsApi, storageApi,
+  backupApi, egmsApi, projectsApi, storageApi,
   EGMSDownloadRecord, PathUsage, Project, StorageTarget,
 } from "../api/client";
-import { DownloadFootprint, DownloadsMap } from "../components/Map/DownloadsMap";
-import { LoadingDots } from "../components/LoadingDots";
-import { TimeSeriesChart } from "../components/TimeSeriesChart";
+import { useDialogs } from "../components/Dialogs";
 
 type Row =
   | { kind: "asf"; id: string; project: Project; path: string | null }
   | { kind: "egms"; id: string; download: EGMSDownloadRecord; path: string };
 
-const TIME_SERIES_LEVELS = new Set(["L2A", "L2B"]);
-
-export function DownloadsPage() {
+export function DownloadsPage({ onOpenViewer }: { onOpenViewer: (datasetId: string) => void }) {
   const qc = useQueryClient();
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pointsForId, setPointsForId] = useState<string | null>(null);
-  const [selectedPointId, setSelectedPointId] = useState<string | null>(null);
+  const { ask, confirm } = useDialogs();
   const [movingRowId, setMovingRowId] = useState<string | null>(null);
   const [moveTarget, setMoveTarget] = useState<string>("");
+  const [archivingRowId, setArchivingRowId] = useState<string | null>(null);
+  const [archiveDestination, setArchiveDestination] = useState("");
 
   const { data: projects } = useQuery({ queryKey: ["projects"], queryFn: projectsApi.list });
   const { data: egmsDownloads } = useQuery({ queryKey: ["egms-downloads"], queryFn: egmsApi.listDownloads });
@@ -62,17 +58,36 @@ export function DownloadsPage() {
     refetchInterval: (q) => (q.state.data?.active ? 1500 : 6000),
   });
 
-  const pointsQuery = useQuery({
-    queryKey: ["egms-points", pointsForId],
-    queryFn: () => egmsApi.getPoints(pointsForId!),
-    enabled: !!pointsForId,
+  // Archive / restore progress: one operation at a time backend-side.
+  const { data: archiveState } = useQuery({
+    queryKey: ["archive-state"],
+    queryFn: projectsApi.archiveState,
+    refetchInterval: (q) => (q.state.data?.active ? 1500 : 6000),
+  });
+  const { data: backupOverview } = useQuery({ queryKey: ["backup"], queryFn: backupApi.overview });
+
+  const archiveMut = useMutation({
+    mutationFn: ({ id, destination }: { id: string; destination: string }) => projectsApi.archive(id, destination),
+    onSuccess: () => {
+      setArchivingRowId(null);
+      qc.invalidateQueries({ queryKey: ["archive-state"] });
+    },
+  });
+  const restoreMut = useMutation({
+    mutationFn: (id: string) => projectsApi.restore(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["archive-state"] }),
   });
 
-  const timeSeriesQuery = useQuery({
-    queryKey: ["egms-timeseries", pointsForId, selectedPointId],
-    queryFn: () => egmsApi.getTimeSeries(pointsForId!, selectedPointId!),
-    enabled: !!pointsForId && !!selectedPointId,
-  });
+  // When an operation finishes, refresh everything that depends on where the files are.
+  const lastSeenStatus = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (archiveState?.status && lastSeenStatus.current === "running" && archiveState.status !== "running") {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["storage-usage"] });
+      qc.invalidateQueries({ queryKey: ["project-download-summary"] });
+    }
+    lastSeenStatus.current = archiveState?.status;
+  }, [archiveState?.status]);
 
   const deleteEgmsMut = useMutation({
     mutationFn: ({ id, deleteFiles }: { id: string; deleteFiles: boolean }) => egmsApi.deleteDownload(id, deleteFiles),
@@ -106,18 +121,6 @@ export function DownloadsPage() {
     moveMut.mutate({ row, mountpoint });
   }
 
-  const footprints: DownloadFootprint[] = useMemo(() => [
-    ...(projects ?? []).map((p): DownloadFootprint => ({
-      id: p.id, source: "asf", label: p.name, geometry: p.geometry,
-    })),
-    ...(egmsDownloads ?? []).map((d): DownloadFootprint => ({
-      id: d.id, source: "egms", label: d.name, geometry: d.geometry,
-    })),
-  ], [projects, egmsDownloads]);
-
-  const selectedEgms = egmsDownloads?.find((d) => d.id === selectedId);
-  const showingPointsForSelected = !!selectedEgms && pointsForId === selectedEgms.id;
-  const loadingPoints = pointsQuery.isFetching && pointsForId === selectedEgms?.id;
   const moveBusy = !!moveState?.active;
 
   return (
@@ -129,79 +132,20 @@ export function DownloadsPage() {
       {moveState?.active && (
         <MoveBanner state={moveState} />
       )}
+      {archiveState?.active && (
+        <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--surface-2)", borderRadius: "var(--radius)", fontSize: 13 }}>
+          {archiveState.kind === "restore" ? "Restoring" : "Archiving"} project: {archiveState.step ?? "working"} ({Math.round(archiveState.pct)}%).
+          Local files are only deleted after the copy has been verified.
+        </div>
+      )}
+      {archiveState?.status === "error" && !archiveState.active && (
+        <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13, whiteSpace: "pre-wrap" }}>
+          Last {archiveState.kind} failed (local files were not deleted): {archiveState.error}
+        </div>
+      )}
       {moveState?.status === "error" && !moveState.active && (
         <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13 }}>
           Last move failed: {moveState.error}
-        </div>
-      )}
-
-      <div className="card" style={{ padding: 16, marginBottom: 20 }}>
-        <DownloadsMap
-          footprints={footprints}
-          points={showingPointsForSelected ? (pointsQuery.data ?? null) : null}
-          selectedId={selectedId}
-          onSelect={(id) => { setSelectedId(id); setSelectedPointId(null); }}
-          onPointClick={(feature) => setSelectedPointId(feature.properties?.point_id ?? null)}
-          height={440}
-        />
-      </div>
-
-      {selectedEgms && (
-        <div className="card" style={{ padding: 16, marginBottom: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, fontSize: 13 }}>{selectedEgms.name}</div>
-              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                {selectedEgms.level} · {selectedEgms.release} · {selectedEgms.filenames.length} file(s)
-              </div>
-            </div>
-            {loadingPoints && <LoadingDots label="Loading…" />}
-            <button
-              className="btn btn-primary btn-sm"
-              disabled={loadingPoints}
-              onClick={() => {
-                setPointsForId(showingPointsForSelected ? null : selectedEgms.id);
-                setSelectedPointId(null);
-              }}
-            >
-              {showingPointsForSelected ? "Hide points" : "Show points"}
-            </button>
-          </div>
-          {loadingPoints && (
-            <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-muted)" }}>
-              Parsing the downloaded file(s) - large L2A/L2B tiles can take a minute or more.
-            </div>
-          )}
-        </div>
-      )}
-
-      {pointsQuery.isError && pointsForId === selectedEgms?.id && (
-        <div style={{ marginBottom: 20, padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13 }}>
-          Failed to parse points from the downloaded file. {String(pointsQuery.error)}
-        </div>
-      )}
-
-      {selectedPointId && showingPointsForSelected && (
-        <div style={{ marginBottom: 20 }}>
-          {selectedEgms && !TIME_SERIES_LEVELS.has(selectedEgms.level) ? (
-            <div style={{ padding: "10px 14px", background: "var(--warning-light)", borderRadius: "var(--radius)", color: "#92400e", fontSize: 13 }}>
-              Time series is only available for L2A/L2B downloads (this one is {selectedEgms.level}, velocity-only).
-            </div>
-          ) : timeSeriesQuery.isError ? (
-            <div style={{ padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13 }}>
-              Failed to load the time series for this point. {String(timeSeriesQuery.error)}
-            </div>
-          ) : timeSeriesQuery.data ? (
-            <TimeSeriesChart
-              dates={timeSeriesQuery.data.dates}
-              valuesMm={timeSeriesQuery.data.values_mm}
-              title={`Displacement time series - point ${selectedPointId}`}
-            />
-          ) : (
-            <div style={{ padding: "10px 14px" }}>
-              <LoadingDots label="Loading time series…" />
-            </div>
-          )}
         </div>
       )}
 
@@ -232,8 +176,7 @@ export function DownloadsPage() {
                 return (
                   <RowShell
                     key={row.id}
-                    selected={selectedId === row.id}
-                    onSelect={() => setSelectedId(row.id)}
+                    onView={() => onOpenViewer(row.id)}
                     badge={<SourceBadge source="asf" />}
                     name={row.project.name}
                     detail={`Track ${row.project.track_number} · ${row.project.flight_direction}`}
@@ -249,11 +192,34 @@ export function DownloadsPage() {
                     onCancelMove={() => setMovingRowId(null)}
                     onConfirmMove={() => startMove(row)}
                     movePending={moveMut.isPending}
+                    archive={{
+                      archivedRemote: row.project.archived_remote ?? null,
+                      busy: !!archiveState?.active,
+                      isOpen: archivingRowId === row.id,
+                      destination: archiveDestination,
+                      onDestinationChange: setArchiveDestination,
+                      onOpen: () => {
+                        setArchivingRowId(row.id);
+                        setArchiveDestination(backupOverview?.config.destination ?? "");
+                      },
+                      onCancel: () => setArchivingRowId(null),
+                      onConfirm: () => archiveMut.mutate({ id: row.id, destination: archiveDestination.trim() }),
+                      onRestore: () => restoreMut.mutate(row.id),
+                      pending: archiveMut.isPending || restoreMut.isPending,
+                      error: archiveMut.isError ? errorText(archiveMut.error) : restoreMut.isError ? errorText(restoreMut.error) : null,
+                    }}
                     deleteLabel="🗑 Delete downloaded interferograms"
-                    deleteTitle="Deletes the HyP3 output files for this project (does not touch raw SLC downloads or the batch/job history - jobs can be re-downloaded later)"
-                    onDelete={() => {
-                      if (!confirm(`Delete downloaded interferogram files for "${row.project.name}"?\n\nThis frees ~${usage?.used_gb ?? "?"} GB but keeps the processing history - you can re-download from HyP3 later. Raw SLC downloads are not affected.`)) return;
-                      deleteProjectDataMut.mutate(row.id);
+                    deleteTitle="Deletes the HyP3 output files for this project (does not touch raw SLC downloads or the batch/job history - jobs can be downloaded again only until they expire on HyP3)"
+                    onDelete={async () => {
+                      const ok = await confirm({
+                        title: `Delete downloaded interferograms for "${row.project.name}"?`,
+                        message:
+                          `This frees about ${usage?.used_gb ?? "?"} GB but keeps the processing history.\n` +
+                          `You can download again from HyP3 only until the results expire there. After that the pairs would have to be processed again, using credits. Raw SLC downloads are not affected.`,
+                        confirmLabel: "Delete files",
+                        danger: true,
+                      });
+                      if (ok) deleteProjectDataMut.mutate(row.id);
                     }}
                     deletePending={deleteProjectDataMut.isPending}
                   />
@@ -264,8 +230,7 @@ export function DownloadsPage() {
               return (
                 <RowShell
                   key={row.id}
-                  selected={selectedId === row.id}
-                  onSelect={() => setSelectedId(row.id)}
+                  onView={() => onOpenViewer(row.id)}
                   badge={<SourceBadge source="egms" />}
                   name={d.name}
                   detail={`${d.level} · ${d.release}`}
@@ -283,11 +248,19 @@ export function DownloadsPage() {
                   movePending={moveMut.isPending}
                   deleteLabel="✕ Remove"
                   deleteTitle="Remove from this list, or also delete the files"
-                  onDelete={() => {
-                    const alsoFiles = confirm(
-                      `Delete "${d.name}"?\n\nOK = also delete the files on disk (~${usage?.used_gb ?? "?"} GB, cannot be undone)\nCancel = keep files, just remove from this list`
-                    );
-                    deleteEgmsMut.mutate({ id: d.id, deleteFiles: alsoFiles });
+                  onDelete={async () => {
+                    const choice = await ask<"files" | "list" | "cancel">({
+                      title: `Remove "${d.name}"?`,
+                      message: `Removing it from the list keeps the files. Deleting the files frees about ${usage?.used_gb ?? "?"} GB and cannot be undone. EGMS products can be downloaded again.`,
+                      dismissValue: "cancel",
+                      buttons: [
+                        { label: "Cancel", value: "cancel", variant: "ghost" },
+                        { label: "Remove from list only", value: "list", variant: "primary" },
+                        { label: "Delete files too", value: "files", variant: "danger" },
+                      ],
+                    });
+                    if (choice === "cancel") return;
+                    deleteEgmsMut.mutate({ id: d.id, deleteFiles: choice === "files" });
                   }}
                   deletePending={deleteEgmsMut.isPending}
                 />
@@ -302,14 +275,32 @@ export function DownloadsPage() {
 
 // ── Row ──────────────────────────────────────────────────────────────────────
 
+interface ArchiveControls {
+  archivedRemote: string | null;
+  busy: boolean;
+  isOpen: boolean;
+  destination: string;
+  onDestinationChange: (v: string) => void;
+  onOpen: () => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onRestore: () => void;
+  pending: boolean;
+  error: string | null;
+}
+
+function errorText(err: unknown): string {
+  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  return detail ?? (err instanceof Error ? err.message : "Request failed");
+}
+
 function RowShell({
-  selected, onSelect, badge, name, detail, downloaded, usage, path,
+  onView, badge, name, detail, downloaded, usage, path,
   isMoving, moveBusy, storageTargets, moveTarget, onMoveTargetChange,
   onStartMoveClick, onCancelMove, onConfirmMove, movePending,
-  deleteLabel, deleteTitle, onDelete, deletePending,
+  deleteLabel, deleteTitle, onDelete, deletePending, archive,
 }: {
-  selected: boolean;
-  onSelect: () => void;
+  onView: () => void;
   badge: React.ReactNode;
   name: string;
   detail: string;
@@ -329,13 +320,12 @@ function RowShell({
   deleteTitle: string;
   onDelete: () => void;
   deletePending: boolean;
+  archive?: ArchiveControls;
 }) {
+  const archived = !!archive?.archivedRemote;
   return (
     <>
-      <tr
-        onClick={onSelect}
-        style={{ cursor: "pointer", background: selected ? "var(--primary-light)" : undefined }}
-      >
+      <tr>
         <td>{badge}</td>
         <td style={{ fontWeight: 500 }}>{name}</td>
         <td style={{ color: "var(--text-muted)" }}>{detail}</td>
@@ -343,24 +333,55 @@ function RowShell({
         <td style={{ color: "var(--text-muted)" }}>
           {usage ? `${usage.used_gb.toFixed(1)} GB` : "…"}
         </td>
-        <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }} title={path}>
-          {path}
+        <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }} title={archived ? archive!.archivedRemote! : path}>
+          {archived ? `archived: ${archive!.archivedRemote}` : path}
         </td>
-        <td onClick={(e) => e.stopPropagation()}>
+        <td>
           <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              style={{ fontSize: 11 }}
+              title={archived ? "Restore the project to view it" : "Open this dataset in the viewer"}
+              disabled={archived}
+              onClick={onView}
+            >
+              View on map
+            </button>
             <button
               className="btn btn-ghost btn-sm"
               style={{ fontSize: 11 }}
-              disabled={moveBusy}
+              disabled={moveBusy || archived}
               title="Move to a different disk"
               onClick={onStartMoveClick}
             >
               ↔ Move
             </button>
+            {archive && !archived && (
+              <button
+                className="btn btn-ghost btn-sm"
+                style={{ fontSize: 11 }}
+                disabled={archive.busy || moveBusy}
+                title="Copy to S3, a disk or another computer through rclone, verify it, then free the local disk"
+                onClick={archive.onOpen}
+              >
+                ⇪ Archive
+              </button>
+            )}
+            {archive && archived && (
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ fontSize: 11 }}
+                disabled={archive.busy || archive.pending}
+                title="Copy the files back from the archive and verify them"
+                onClick={archive.onRestore}
+              >
+                ⇩ Restore
+              </button>
+            )}
             <button
               className="btn btn-ghost btn-sm"
               style={{ fontSize: 11, color: "var(--danger)" }}
-              disabled={deletePending}
+              disabled={deletePending || archived}
               title={deleteTitle}
               onClick={onDelete}
             >
@@ -369,8 +390,33 @@ function RowShell({
           </div>
         </td>
       </tr>
+      {archive?.isOpen && (
+        <tr>
+          <td colSpan={7} style={{ background: "var(--surface-2)", padding: "10px 14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, flexWrap: "wrap" }}>
+              <span style={{ color: "var(--text-muted)" }}>Archive to:</span>
+              <input
+                className="input"
+                style={{ width: 380 }}
+                value={archive.destination}
+                onChange={(e) => archive.onDestinationChange(e.target.value)}
+                placeholder="/mnt/archive   or   remotename:bucket/insar"
+              />
+              <button className="btn btn-primary btn-sm" disabled={archive.pending || !archive.destination.trim()} onClick={archive.onConfirm}>
+                {archive.pending ? "Starting…" : "Archive"}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={archive.onCancel}>Cancel</button>
+            </div>
+            <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)" }}>
+              Everything in the project folder is copied, including MintPy results and SLC scenes. The local folder is deleted
+              only after the copy verifies. An archived project cannot be viewed, processed or updated until it is restored.
+            </div>
+            {archive.error && <div style={{ marginTop: 6, fontSize: 12, color: "var(--danger)" }}>{archive.error}</div>}
+          </td>
+        </tr>
+      )}
       {isMoving && (
-        <tr onClick={(e) => e.stopPropagation()}>
+        <tr>
           <td colSpan={7} style={{ background: "var(--surface-2)", padding: "10px 14px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12 }}>
               <span style={{ color: "var(--text-muted)" }}>Move to:</span>
@@ -432,23 +478,23 @@ function MoveBanner({ state }: { state: { pct: number; src: string | null; dst: 
   return (
     <div style={{
       marginBottom: 18, padding: "14px 18px",
-      background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
-      border: "1px solid rgba(99,102,241,0.3)", borderRadius: "var(--radius-lg)",
+      background: "linear-gradient(135deg, rgba(var(--accent-rgb),0.12) 0%, rgba(255,255,255,0.03) 70%), #0b0f0e",
+      border: "1px solid rgba(61,255,154,0.3)", borderRadius: "var(--radius-lg)",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#818cf8", boxShadow: "0 0 6px #818cf8" }} />
-        <span style={{ fontWeight: 700, fontSize: 13, color: "#f1f5f9" }}>Moving data…</span>
-        <span style={{ marginLeft: "auto", fontSize: 12, color: "#94a3b8" }}>{state.pct.toFixed(0)}%</span>
+        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 8px var(--accent)" }} />
+        <span style={{ fontWeight: 700, fontSize: 13, color: "var(--text)" }}>Moving data…</span>
+        <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-muted)" }}>{state.pct.toFixed(0)}%</span>
       </div>
       {state.src && state.dst && (
-        <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 8 }}>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 8 }}>
           {state.src} → {state.dst}
         </div>
       )}
-      <div style={{ height: 10, background: "rgba(255,255,255,0.05)", borderRadius: 6, overflow: "hidden", border: "1px solid rgba(99,102,241,0.2)" }}>
+      <div style={{ height: 10, background: "rgba(255,255,255,0.05)", borderRadius: 6, overflow: "hidden", border: "1px solid rgba(61,255,154,0.2)" }}>
         <div style={{
           height: "100%", width: `${state.pct}%`, borderRadius: 6, transition: "width 0.3s ease",
-          background: "linear-gradient(90deg, #4338ca, #818cf8)",
+          background: "linear-gradient(90deg, var(--accent-2), var(--accent))",
         }} />
       </div>
     </div>
@@ -457,8 +503,8 @@ function MoveBanner({ state }: { state: { pct: number; src: string | null; dst: 
 
 function SourceBadge({ source }: { source: "asf" | "egms" }) {
   const style = source === "asf"
-    ? { background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe" }
-    : { background: "#fffbeb", color: "#92400e", border: "1px solid #fed7aa" };
+    ? { background: "var(--primary-light)", color: "var(--primary-text)", border: "1px solid var(--primary-border)" }
+    : { background: "#fffbeb", color: "var(--warning)", border: "1px solid var(--warning-border)" };
   return (
     <span style={{ ...style, padding: "2px 8px", borderRadius: 9999, fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>
       {source === "asf" ? "ASF/HyP3" : "EGMS"}

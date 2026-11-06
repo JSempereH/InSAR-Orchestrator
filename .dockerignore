@@ -1,0 +1,16 @@
+.git
+.github
+.claude
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+frontend/dist
+backend/downloads
+backend/*.db*
+backend/.env
+backups
+data
+docs
+*.csv
+*.json.bak

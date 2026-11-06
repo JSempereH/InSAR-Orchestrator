@@ -1,0 +1,40 @@
+# InSAR Orchestrator: one container, one port.
+#
+#   cp .env.example .env        # set APP_PASSWORD at least
+#   docker compose up -d        # or: podman compose up -d
+#
+# Everything the app stores (database, downloads, encryption key, rclone
+# remotes) lives in ./data, so backing up or moving the app means copying that
+# folder. The container never runs as root.
+
+services:
+  insar:
+    image: ${INSAR_IMAGE:-ghcr.io/jsempereh/insar-orchestrator:latest}
+    build: .
+    restart: unless-stopped
+    # Same uid and gid as you, so the files in ./data belong to you on the host.
+    # Docker: export UID GID first (or set them in .env). Rootless Podman: leave
+    # `userns_mode` below as it is and the container user maps to your own.
+    user: "${UID:-1000}:${GID:-1000}"
+    userns_mode: "${USERNS_MODE:-}"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:-}
+    # Reachable only from this machine by default. To use it over a VPN, put the
+    # VPN address here (for example 10.8.0.2); for the open internet, put a
+    # reverse proxy with HTTPS in front (see docs/deploy.md).
+    ports:
+      - "${BIND:-127.0.0.1}:${PORT:-8000}:8000"
+    volumes:
+      - ./data:/data
+      # Extra disks for backups, archives and project storage must be mounted in
+      # explicitly, at the same path the app should use:
+      # - /mnt/backup:/mnt/backup
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true

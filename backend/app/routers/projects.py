@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app import models, schemas
-from app.services import storage_move, storage_service
+from app.services import archive_service, storage_move, storage_service
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -65,6 +65,28 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
     return project
 
 
+@router.patch("/{project_id}", response_model=schemas.ProjectOut)
+def update_project(project_id: str, body: schemas.ProjectUpdate, db: Session = Depends(get_db)):
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    changes = body.model_dump(exclude_unset=True)
+    if "date_end" in changes:
+        if changes["date_end"] is None:
+            raise HTTPException(status_code=422, detail="date_end cannot be cleared")
+        if project.date_start and changes["date_end"] < project.date_start:
+            raise HTTPException(status_code=422, detail="date_end cannot be before date_start")
+    for field in ("max_temporal_neighbors", "backup_enabled"):
+        if changes.get(field) is None:
+            changes.pop(field, None)
+    for field, value in changes.items():
+        setattr(project, field, value)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
 @router.delete("/{project_id}")
 def delete_project(project_id: str, db: Session = Depends(get_db)):
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
@@ -109,6 +131,7 @@ def move_project_storage(project_id: str, body: schemas.MoveRequest, db: Session
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(404, "Project not found")
+    archive_service.reject_if_archived(project)
     if not project.storage_path or not Path(project.storage_path).exists():
         raise HTTPException(400, "Nothing to move: no storage path, or it doesn't exist on disk")
 
@@ -168,6 +191,7 @@ def delete_project_download_data(project_id: str, db: Session = Depends(get_db))
     project = db.query(models.Project).filter(models.Project.id == project_id).first()
     if not project:
         raise HTTPException(404, "Project not found")
+    archive_service.reject_if_archived(project)
 
     freed_bytes = 0
     storage_path = Path(project.storage_path) if project.storage_path else None

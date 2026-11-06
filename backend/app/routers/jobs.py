@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Batch, Job, JobStatus, Project
-from app.schemas import BatchOut, BatchPlanOut, JobOut, SubmitBatchRequest
-from app.services import batch_submission, download_state
+from app.schemas import (
+    BatchOut, BatchPlanOut, JobOut, ProjectRefreshOut, ProjectRefreshRequest, SubmitBatchRequest,
+)
+from app.services import archive_service, batch_submission, download_state
 from app.services import asf_service
 from app.services.hyp3_service import get_hyp3_adapter
 from insar_core.models.scene import AOI, SearchParams
@@ -29,11 +31,11 @@ def _get_orchestrator(db: Session) -> InSAROrchestrator:
     )
 
 
-def _project_search_params(project: Project) -> SearchParams:
+def _project_search_params(project: Project, date_end: Optional[str] = None) -> SearchParams:
     return SearchParams(
         aoi=AOI(geometry=project.geometry),
         date_start=date.fromisoformat(project.date_start),
-        date_end=date.fromisoformat(project.date_end),
+        date_end=date.fromisoformat(date_end or project.date_end),
         track_number=project.track_number,
         flight_direction=project.flight_direction,
     )
@@ -136,6 +138,7 @@ def submit_batch(
     if not project:
         raise HTTPException(404, "Project not found")
 
+    archive_service.reject_if_archived(project)
     if body.dry_run:
         raise HTTPException(400, "Set dry_run=false to actually submit")
 
@@ -149,23 +152,101 @@ def submit_batch(
     if not pairs:
         raise HTTPException(400, "All pairs for this project have already been submitted.")
 
-    # Create the batch now, before submitting a single pair, so it's visible
-    # in the UI immediately. Submission to HyP3 (one HTTP call per pair) runs
-    # in the background and fills in Job rows as it goes; see batch_submission.
+    return _start_batch(
+        db, project, pairs,
+        label=body.label, auto_download=body.auto_download,
+    )
+
+
+def _start_batch(
+    db: Session,
+    project: Project,
+    pairs: list,
+    label: Optional[str],
+    auto_download: bool,
+    run_mintpy_when_done: bool = False,
+) -> Batch:
+    """Create the batch row and hand the pairs to the background submitter.
+
+    The batch is created now, before submitting a single pair, so it's
+    visible in the UI immediately. Submission to HyP3 (one HTTP call per pair)
+    runs in the background and fills in Job rows as it goes; see
+    batch_submission."""
     batch = Batch(
-        project_id=project_id,
-        label=body.label or f"Batch {len(project.batches) + 1}",
+        project_id=project.id,
+        label=label or f"Batch {len(project.batches) + 1}",
         total_pairs=len(pairs),
         status="submitting",
-        auto_download=body.auto_download,
+        auto_download=auto_download,
+        run_mintpy_when_done=run_mintpy_when_done,
     )
     db.add(batch)
     db.commit()
     db.refresh(batch)
 
     batch_submission.start(batch.id, pairs, job_name=f"insar-{project.name[:20]}")
-
     return batch
+
+
+@router.post("/{project_id}/refresh", response_model=ProjectRefreshOut)
+def refresh_project(
+    project_id: str,
+    body: ProjectRefreshRequest,
+    db: Session = Depends(get_db),
+):
+    """Bring a project up to date with newer Sentinel-1 acquisitions.
+
+    Moves the project's end date forward (never back), then processes only the
+    pairs that are not already in the database, so earlier interferograms are
+    neither re-submitted nor re-downloaded. A dry run (the default) reports
+    what would be submitted without changing anything.
+    """
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    archive_service.reject_if_archived(project)
+    requested_end = body.date_end or date.today().isoformat()
+    new_end = max(project.date_end or requested_end, requested_end)
+    neighbors = body.max_temporal_neighbors or project.max_temporal_neighbors or 3
+
+    params = _project_search_params(project, date_end=new_end)
+    exclude = _existing_pairs(db, project) or None
+    orchestrator = _get_orchestrator(db)
+
+    if body.dry_run:
+        plan = orchestrator.plan_batch(
+            params=params, max_temporal_neighbors=neighbors, exclude_pairs=exclude,
+        )
+        return ProjectRefreshOut(
+            date_end=new_end,
+            total_pairs=plan.total_pairs,
+            scene_count=plan.scene_count,
+            estimated_size_gb=_estimate_batch_size_gb(db, project, plan.total_pairs),
+        )
+
+    pairs = orchestrator.build_pairs(
+        params=params, max_temporal_neighbors=neighbors, exclude_pairs=exclude,
+    )
+    project.date_end = new_end
+    project.max_temporal_neighbors = neighbors
+    db.commit()
+
+    if not pairs:
+        return ProjectRefreshOut(date_end=new_end, total_pairs=0)
+
+    batch = _start_batch(
+        db, project, pairs,
+        label=f"Update {date.today().isoformat()}",
+        auto_download=True,
+        run_mintpy_when_done=body.run_mintpy,
+    )
+    return ProjectRefreshOut(
+        date_end=new_end,
+        total_pairs=len(pairs),
+        estimated_size_gb=_estimate_batch_size_gb(db, project, len(pairs)),
+        batch=batch,
+    )
 
 
 @router.get("/{project_id}/batches/{batch_id}/jobs", response_model=list[JobOut])

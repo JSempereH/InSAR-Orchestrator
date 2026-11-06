@@ -158,7 +158,8 @@ class ASFAdapter(SceneSearchAdapter):
             processingLevel=asf.PRODUCT_TYPE.SLC,
             intersectsWith=_sanitize_wkt(params.aoi.wkt),
             start=datetime.combine(params.date_start, datetime.min.time()),
-            end=datetime.combine(params.date_end, datetime.min.time()),
+            # date_end is inclusive: run to the end of that day, not its midnight.
+            end=datetime.combine(params.date_end, datetime.max.time().replace(microsecond=0)),
         )
         if params.track_number is not None:
             kwargs["relativeOrbit"] = params.track_number

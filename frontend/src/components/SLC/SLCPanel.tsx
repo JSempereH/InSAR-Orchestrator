@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { projectsApi, storageApi, Scene, SLCDownload, slcApi } from "../../api/client";
 import { DownloadQueueBanner } from "../DownloadQueueBanner";
+import { useDialogs } from "../Dialogs";
 
 interface SLCPanelProps {
   projectId: string;
@@ -16,6 +17,7 @@ interface SLCPanelProps {
  */
 export function SLCPanel({ projectId }: SLCPanelProps) {
   const qc = useQueryClient();
+  const { confirm } = useDialogs();
   const [expanded, setExpanded] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -196,9 +198,14 @@ export function SLCPanel({ projectId }: SLCPanelProps) {
                   <DownloadHistoryRow
                     key={d.id}
                     download={d}
-                    onDelete={() => {
-                      if (!confirm(`Delete ${d.filenames.length} SLC file(s) downloaded on ${new Date(d.created_at).toLocaleString()}?\n\nThis permanently removes them from disk.`)) return;
-                      deleteMut.mutate(d.id);
+                    onDelete={async () => {
+                      const ok = await confirm({
+                        title: `Delete ${d.filenames.length} SLC file(s)?`,
+                        message: `Downloaded on ${new Date(d.created_at).toLocaleString()}.\nThis permanently removes them from disk. They can be downloaded again from ASF at no credit cost.`,
+                        confirmLabel: "Delete files",
+                        danger: true,
+                      });
+                      if (ok) deleteMut.mutate(d.id);
                     }}
                     deleting={deleteMut.isPending}
                   />
@@ -241,7 +248,7 @@ function SceneRow({ scene, checked, onToggle }: { scene: Scene; checked: boolean
         display: "flex", alignItems: "center", gap: 10,
         padding: "6px 10px", borderRadius: "var(--radius)",
         border: "1px solid var(--border)", cursor: scene.already_downloaded ? "default" : "pointer",
-        background: scene.already_downloaded ? "var(--surface-2)" : checked ? "var(--primary-light)" : "white",
+        background: scene.already_downloaded ? "var(--surface-2)" : checked ? "var(--primary-light)" : "var(--panel)",
         opacity: scene.already_downloaded ? 0.6 : 1,
       }}
     >

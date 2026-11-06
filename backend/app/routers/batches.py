@@ -29,8 +29,11 @@ def update_batch(batch_id: str, body: schemas.BatchUpdate, db: Session = Depends
     if not batch:
         raise HTTPException(status_code=404, detail="Batch not found")
 
-    turning_on = body.auto_download and not batch.auto_download
-    batch.auto_download = body.auto_download
+    turning_on = bool(body.auto_download) and not batch.auto_download
+    if body.auto_download is not None:
+        batch.auto_download = body.auto_download
+    if body.label is not None:
+        batch.label = body.label
     db.commit()
     db.refresh(batch)
 

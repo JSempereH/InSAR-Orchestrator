@@ -21,7 +21,7 @@ export function TimeSeriesChart({ dates, valuesMm, title }: TimeSeriesChartProps
       {title && <h3 style={{ marginBottom: 12 }}>{title}</h3>}
       <ResponsiveContainer width="100%" height={280}>
         <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
           <XAxis
             dataKey="date"
             tick={{ fontSize: 11, fill: "var(--text-muted)" }}
@@ -33,9 +33,11 @@ export function TimeSeriesChart({ dates, valuesMm, title }: TimeSeriesChartProps
           />
           <Tooltip
             formatter={(value) => [`${Number(value).toFixed(2)} mm`, "Displacement"]}
-            contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--border)" }}
+            contentStyle={{ fontSize: 12, borderRadius: 10, border: "1px solid var(--border)", background: "#0e1211", color: "var(--text)" }}
+            itemStyle={{ color: "var(--text)" }}
+            labelStyle={{ color: "var(--text-muted)" }}
           />
-          <Line type="monotone" dataKey="displacement" stroke="#2563eb" strokeWidth={2} dot={false} isAnimationActive={false} />
+          <Line type="monotone" dataKey="displacement" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} style={{ filter: "drop-shadow(0 0 6px rgba(61,255,154,0.7))" }} />
         </LineChart>
       </ResponsiveContainer>
     </div>
