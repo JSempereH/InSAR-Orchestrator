@@ -193,3 +193,18 @@ def test_download_succeeded_downloads_only_succeeded_jobs(tmp_path):
 
     assert list(results.keys()) == ["job-done"]
     assert results["job-done"] == [tmp_path / "job-done.tif"]
+
+
+def test_poll_jobs_falls_back_for_jobs_outside_the_bulk_window():
+    """The bulk lookup only covers recent jobs; an older one it does not
+    return must still be refreshed individually, not silently dropped."""
+    class WindowedProcessor(BulkProcessor):
+        def get_status(self, job_id: str) -> SubmittedJob:
+            return _job(job_id, JobStatus.SUCCEEDED)
+
+    processor = WindowedProcessor({"job-new": _job("job-new", JobStatus.RUNNING)})
+    orchestrator = InSAROrchestrator(FakeSceneAdapter([]), processor)
+
+    refreshed = orchestrator.poll_jobs(["job-new", "job-old"])
+
+    assert {j.hyp3_job_id: j.status for j in refreshed} == {"job-new": JobStatus.RUNNING, "job-old": JobStatus.SUCCEEDED}

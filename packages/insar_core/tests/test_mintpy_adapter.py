@@ -3,14 +3,14 @@ import zipfile
 import numpy as np
 import pyproj
 import pytest
-from osgeo import gdal, osr
+import rasterio
+from rasterio.transform import Affine
 
 from insar_core.pipeline.mintpy_adapter import (
     MintPyAdapter,
     _extract_and_crop,
     _is_metadata_sidecar,
     _native_crop_window,
-    _padded_bbox,
     _subset_lalo,
 )
 
@@ -26,23 +26,23 @@ _UTM_X_ORIGIN, _UTM_Y_ORIGIN = 430000.0, 4480000.0
 _UTM_PIXEL = 80.0
 
 
+def _write_tif(path, data, transform):
+    with rasterio.open(
+        path, "w", driver="GTiff", width=data.shape[1], height=data.shape[0],
+        count=1, dtype="float32", crs=f"EPSG:{_UTM_EPSG}", transform=transform,
+    ) as dst:
+        dst.write(data, 1)
+
+
 def _write_utm_tif(path, *, size=20, fill_value=None):
     """A small synthetic single-band GeoTIFF on the same grid/CRS as a real
     HyP3 product, with a distinct, checkable value at every pixel (its own
     row*size+col index) unless `fill_value` is given."""
-    driver = gdal.GetDriverByName("GTiff")
-    ds = driver.Create(str(path), size, size, 1, gdal.GDT_Float32)
-    ds.SetGeoTransform((_UTM_X_ORIGIN, _UTM_PIXEL, 0.0, _UTM_Y_ORIGIN, 0.0, -_UTM_PIXEL))
-    srs = osr.SpatialReference()
-    srs.ImportFromEPSG(_UTM_EPSG)
-    ds.SetProjection(srs.ExportToWkt())
     if fill_value is not None:
         data = np.full((size, size), fill_value, dtype="float32")
     else:
         data = np.arange(size * size, dtype="float32").reshape(size, size)
-    ds.GetRasterBand(1).WriteArray(data)
-    ds.FlushCache()
-    ds = None
+    _write_tif(path, data, Affine(_UTM_PIXEL, 0.0, _UTM_X_ORIGIN, 0.0, -_UTM_PIXEL, _UTM_Y_ORIGIN))
     return data
 
 
@@ -106,9 +106,8 @@ def test_native_crop_window_matches_expected_pixel_range(tmp_path):
     # boundary - not a concern in real use, where a padded AOI bbox never
     # lines up exactly with a scene's pixel grid. Assert containment plus a
     # small, bounded amount of slop instead of exact equality.
-    ds = gdal.Open(str(tif_path))
-    window = _native_crop_window(ds, _wgs84_bbox_around_pixels(row_min=5, row_max=10, col_min=3, col_max=8))
-    ds = None
+    with rasterio.open(tif_path) as ds:
+        window = _native_crop_window(ds, _wgs84_bbox_around_pixels(row_min=5, row_max=10, col_min=3, col_max=8))
 
     xoff, yoff, xsize, ysize = window
     assert 1 <= xoff <= 3
@@ -122,9 +121,8 @@ def test_native_crop_window_returns_none_outside_raster(tmp_path):
     tif_path = tmp_path / "src.tif"
     _write_utm_tif(tif_path, size=20)
     # Far south of the synthetic grid's own extent (grid covers ~40.4N-40.5N-ish for this origin).
-    ds = gdal.Open(str(tif_path))
-    window = _native_crop_window(ds, (-10.0, -10.0, -9.0, -9.0))
-    ds = None
+    with rasterio.open(tif_path) as ds:
+        window = _native_crop_window(ds, (-10.0, -10.0, -9.0, -9.0))
 
     assert window is None
 
@@ -145,21 +143,20 @@ def test_extract_and_crop_preserves_pixel_values_and_resolution(tmp_path):
     cropped_path = dest_dir / member_name
     assert cropped_path.exists()
 
-    ds = gdal.Open(str(cropped_path))
-    gt = ds.GetGeoTransform()
-    assert gt[1] == pytest.approx(_UTM_PIXEL)  # native resolution preserved, not resampled
-    assert gt[5] == pytest.approx(-_UTM_PIXEL)
-    assert ds.RasterXSize <= 8 and ds.RasterYSize <= 8  # cropped, nowhere near the full 20x20 scene
+    with rasterio.open(cropped_path) as ds:
+        gt = ds.transform
+        cropped_values = ds.read(1)
+        width, height = ds.width, ds.height
+    assert gt.a == pytest.approx(_UTM_PIXEL)  # native resolution preserved, not resampled
+    assert gt.e == pytest.approx(-_UTM_PIXEL)
+    assert width <= 8 and height <= 8  # cropped, nowhere near the full 20x20 scene
 
     # Recover this crop's own pixel offset into the source grid from its
     # geotransform (see test_native_crop_window_... for why this isn't
     # asserted as an exact, hardcoded window).
-    xoff = round((gt[0] - _UTM_X_ORIGIN) / _UTM_PIXEL)
-    yoff = round((_UTM_Y_ORIGIN - gt[3]) / _UTM_PIXEL)
-    assert xoff + ds.RasterXSize >= 8 and yoff + ds.RasterYSize >= 10  # covers the requested range
-
-    cropped_values = ds.GetRasterBand(1).ReadAsArray()
-    ds = None
+    xoff = round((gt.c - _UTM_X_ORIGIN) / _UTM_PIXEL)
+    yoff = round((_UTM_Y_ORIGIN - gt.f) / _UTM_PIXEL)
+    assert xoff + width >= 8 and yoff + height >= 10  # covers the requested range
 
     expected = data[yoff:yoff + cropped_values.shape[0], xoff:xoff + cropped_values.shape[1]]
     assert np.array_equal(cropped_values, expected)  # bit-for-bit, no interpolation
@@ -237,9 +234,8 @@ def test_unzip_all_crops_to_aoi_and_skips_unneeded_files(tmp_path):
         f"{scene}.txt",
     }
 
-    ds = gdal.Open(str(extracted_dir / f"{scene}_unw_phase.tif"))
-    size = (ds.RasterXSize, ds.RasterYSize)
-    ds = None
+    with rasterio.open(extracted_dir / f"{scene}_unw_phase.tif") as ds:
+        size = (ds.width, ds.height)
     assert size[0] < 20 and size[1] < 20  # cropped, not full scene resolution
 
     # The metadata sidecar is plain text - extracted verbatim, never cropped.
@@ -264,9 +260,8 @@ def test_unzip_all_without_geometry_filters_but_does_not_crop(tmp_path):
         f"{scene}.txt",
     }
 
-    ds = gdal.Open(str(extracted_dir / f"{scene}_unw_phase.tif"))
-    size = (ds.RasterXSize, ds.RasterYSize)
-    ds = None
+    with rasterio.open(extracted_dir / f"{scene}_unw_phase.tif") as ds:
+        size = (ds.width, ds.height)
     assert size == (20, 20)  # full resolution kept when there's no AOI to crop to
 
     assert (downloads_dir / "S1AA_fake_scene.zip").exists()  # nothing was cropped, so nothing to reclaim yet
@@ -306,15 +301,7 @@ def test_unzip_all_preserves_zip_when_a_member_fails_to_crop(tmp_path):
 
         # water_mask.tif on a completely different (non-overlapping) grid.
         bad_tif = tmp_path / "_tmp_water_mask.tif"
-        driver = gdal.GetDriverByName("GTiff")
-        ds = driver.Create(str(bad_tif), 5, 5, 1, gdal.GDT_Float32)
-        ds.SetGeoTransform((0.0, 80.0, 0.0, 0.0, 0.0, -80.0))
-        srs = osr.SpatialReference()
-        srs.ImportFromEPSG(_UTM_EPSG)
-        ds.SetProjection(srs.ExportToWkt())
-        ds.GetRasterBand(1).WriteArray(np.zeros((5, 5), dtype="float32"))
-        ds.FlushCache()
-        ds = None
+        _write_tif(bad_tif, np.zeros((5, 5), dtype="float32"), Affine(80.0, 0.0, 0.0, 0.0, -80.0, 0.0))
         zf.write(bad_tif, f"{scene}/{scene}_water_mask.tif")
 
     bbox = _wgs84_bbox_around_pixels(row_min=5, row_max=10, col_min=3, col_max=8)
@@ -329,3 +316,29 @@ def test_unzip_all_preserves_zip_when_a_member_fails_to_crop(tmp_path):
         adapter.unzip_all(geometry=geometry)
 
     assert zip_path.exists()  # partial capture - the source must not be discarded
+
+
+def test_unzip_all_leaves_no_partial_directory_after_failure(tmp_path):
+    """A failure midway must not leave a half-extracted directory behind:
+    unzip_all skips any zip whose output directory exists, so a partial one
+    would silently be treated as done on the next run."""
+    downloads_dir = tmp_path / "downloads"
+    downloads_dir.mkdir()
+    scene = "S1AA_fake_scene"
+    with zipfile.ZipFile(downloads_dir / f"{scene}.zip", "w") as zf:
+        good = tmp_path / "_good.tif"
+        _write_utm_tif(good, size=20)
+        zf.write(good, f"{scene}/{scene}_unw_phase.tif")
+        bad = tmp_path / "_bad.tif"
+        _write_tif(bad, np.zeros((5, 5), dtype="float32"), Affine(80.0, 0.0, 0.0, 0.0, -80.0, 0.0))
+        zf.write(bad, f"{scene}/{scene}_water_mask.tif")
+
+    min_lon, min_lat, max_lon, max_lat = _wgs84_bbox_around_pixels(5, 10, 3, 8)
+    geometry = {"type": "Polygon", "coordinates": [[[min_lon, min_lat], [max_lon, min_lat], [max_lon, max_lat], [min_lon, max_lat], [min_lon, min_lat]]]}
+    adapter = MintPyAdapter(downloads_dir=downloads_dir, work_dir=tmp_path / "work")
+    with pytest.raises(RuntimeError):
+        adapter.unzip_all(geometry=geometry)
+
+    assert not (downloads_dir / scene).exists()
+    assert not any(p.name.startswith(".") for p in downloads_dir.iterdir())
+    assert (downloads_dir / f"{scene}.zip").exists()

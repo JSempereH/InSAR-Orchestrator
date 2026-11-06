@@ -110,3 +110,31 @@ def test_turning_on_auto_download_twice_does_not_requeue(client, monkeypatch):
     client.patch(f"/api/batches/{batch_id}", json={"auto_download": True})
 
     assert len(enqueued) == 1  # only the first PATCH was a real on/off transition
+
+
+def test_rename_batch_trims_and_keeps_auto_download(client):
+    project = _create_project(client)
+    batch_id = _create_batch_with_jobs(project["id"], [])
+    client.patch(f"/api/batches/{batch_id}", json={"auto_download": True})
+
+    resp = client.patch(f"/api/batches/{batch_id}", json={"label": "  Spring 2026 update  "})
+    assert resp.status_code == 200
+    assert resp.json()["label"] == "Spring 2026 update"
+    assert resp.json()["auto_download"] is True  # a rename leaves the other setting alone
+
+
+def test_toggling_auto_download_keeps_the_name(client):
+    project = _create_project(client)
+    batch_id = _create_batch_with_jobs(project["id"], [])
+    client.patch(f"/api/batches/{batch_id}", json={"label": "Keep me"})
+
+    resp = client.patch(f"/api/batches/{batch_id}", json={"auto_download": True})
+    assert resp.json()["label"] == "Keep me"
+
+
+def test_rename_rejects_blank_and_overlong_names(client):
+    project = _create_project(client)
+    batch_id = _create_batch_with_jobs(project["id"], [])
+    assert client.patch(f"/api/batches/{batch_id}", json={"label": "   "}).status_code == 422
+    assert client.patch(f"/api/batches/{batch_id}", json={"label": "x" * 81}).status_code == 422
+    assert client.patch("/api/batches/nope", json={"label": "a"}).status_code == 404

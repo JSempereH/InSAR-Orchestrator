@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 
 from app.database import SessionLocal
 from app.models import Job, JobStatus
@@ -37,6 +39,63 @@ async def _refresh_jobs() -> dict:
 
 
 def _refresh_jobs_sync() -> dict:
+    result = _refresh_statuses_sync()
+    try:
+        _launch_pending_mintpy()
+    except Exception:
+        logger.exception("Could not check batches waiting for MintPy")
+    return result
+
+
+def _launch_pending_mintpy() -> None:
+    """Start MintPy for projects whose "update" batch has fully landed on disk.
+
+    A batch is ready once it finished submitting, none of its jobs is still
+    pending or running, and every job that succeeded has been downloaded. This
+    runs on every poll cycle, including those with no active jobs, because the
+    last downloads usually finish after the last status change.
+    """
+    from app.config import settings
+    from app.models import Batch, Project
+    from app.services import mintpy_service
+
+    db = SessionLocal()
+    try:
+        waiting = (
+            db.query(Batch)
+            .filter(Batch.run_mintpy_when_done.is_(True), Batch.status == "done")
+            .all()
+        )
+        for batch in waiting:
+            if not batch.jobs:
+                # Every submission failed: nothing will ever arrive.
+                batch.run_mintpy_when_done = False
+                continue
+            if any(j.status in (JobStatus.PENDING, JobStatus.RUNNING) for j in batch.jobs):
+                continue
+            if any(j.status == JobStatus.SUCCEEDED and not j.downloaded for j in batch.jobs):
+                continue
+
+            project = db.query(Project).filter_by(id=batch.project_id).first()
+            if project is None:
+                batch.run_mintpy_when_done = False
+                continue
+            downloads_dir = Path(project.storage_path) if project.storage_path else Path(settings.downloads_dir)
+            try:
+                mintpy_service.start_run(project.id, downloads_dir, geometry=project.geometry)
+            except RuntimeError as exc:
+                if "already in progress" in str(exc):
+                    continue  # try again next cycle
+                logger.warning("Not running MintPy for project %s: %s", project.id, exc)
+            else:
+                logger.info("Started MintPy for project %s after batch %s", project.id, batch.id)
+            batch.run_mintpy_when_done = False
+        db.commit()
+    finally:
+        db.close()
+
+
+def _refresh_statuses_sync() -> dict:
     db = SessionLocal()
     try:
         active = (
@@ -79,28 +138,33 @@ def _refresh_jobs_sync() -> dict:
                     logger.warning("Could not refresh job %s", job.hyp3_job_id)
                     continue
 
+            # Savepoint per job: a bad row rolls back only itself, not every
+            # update already made earlier in this cycle.
             try:
-                new_status = JobStatus(hyp3_job.status.value)
-                if new_status != job.status:
-                    logger.info(
-                        "Job %s: %s → %s", job.hyp3_job_id, job.status.value, new_status.value
-                    )
-                    if new_status == JobStatus.SUCCEEDED and job.batch and job.batch.auto_download:
-                        to_auto_download.append({"job_id": job.id, "hyp3_job_id": job.hyp3_job_id})
-                    job.status = new_status
-                    updated += 1
-
-                if hyp3_job.completed_at:
-                    job.completed_at = hyp3_job.completed_at
-                if hyp3_job.credit_cost is not None:
-                    job.credit_cost = hyp3_job.credit_cost
-                if hyp3_job.error_message:
-                    job.error_message = str(hyp3_job.error_message)
-
-                db.flush()  # validate each row before moving on
+                with db.begin_nested():
+                    new_status = JobStatus(hyp3_job.status.value)
+                    changed = new_status != job.status
+                    if changed:
+                        logger.info(
+                            "Job %s: %s → %s", job.hyp3_job_id, job.status.value, new_status.value
+                        )
+                        job.status = new_status
+                        if new_status in (JobStatus.SUCCEEDED, JobStatus.FAILED) and job.completed_at is None:
+                            job.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                    if hyp3_job.credit_cost is not None:
+                        job.credit_cost = hyp3_job.credit_cost
+                    if hyp3_job.error_message:
+                        job.error_message = str(hyp3_job.error_message)
+                    db.flush()  # validate the row before moving on
             except Exception:
                 logger.warning("Could not update job %s, skipping", job.hyp3_job_id, exc_info=True)
-                db.rollback()
+                continue
+
+            # Only queue the download once the row's update is safely stored.
+            if changed:
+                updated += 1
+                if new_status == JobStatus.SUCCEEDED and job.batch and job.batch.auto_download:
+                    to_auto_download.append({"job_id": job.id, "hyp3_job_id": job.hyp3_job_id})
 
         db.commit()
 

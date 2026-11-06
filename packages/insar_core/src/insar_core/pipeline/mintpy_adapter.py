@@ -1,20 +1,48 @@
 from __future__ import annotations
 
 import glob
+import os
+import shutil
 import subprocess
+import sys
+import threading
 import zipfile
-from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
 import pyproj
-from osgeo import gdal, osr
+import rasterio
+from rasterio.windows import Window
 
-# Explicit rather than relying on GDAL's current implicit default (a
-# FutureWarning notes this default flips in GDAL 4.0): the crop functions
-# below check for a None return from gdal.Open/Translate rather than
-# catching exceptions, so this keeps that behavior guaranteed.
-gdal.DontUseExceptions()
+_SMALLBASELINE = "smallbaselineApp.py"
+
+
+def find_smallbaseline() -> Optional[str]:
+    """Path to smallbaselineApp.py, or None if MintPy is not installed.
+
+    Looks on PATH first, then next to the running interpreter: a venv that was
+    never activated (e.g. `.venv/bin/uvicorn ...`) still has MintPy's scripts in
+    its own bin directory even though that directory is not on PATH."""
+    found = shutil.which(_SMALLBASELINE)
+    if found:
+        return found
+    candidate = Path(sys.executable).parent / _SMALLBASELINE
+    return str(candidate) if candidate.exists() else None
+
+
+def _mintpy_env() -> dict:
+    """Environment for MintPy subprocesses, with the interpreter's own bin
+    directory first on PATH so the scripts MintPy itself launches resolve."""
+    env = dict(os.environ)
+    env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+# Zips are cropped concurrently: rasterio releases the GIL while GDAL reads,
+# decompresses and writes, so threads give a real speedup on the I/O and
+# deflate-bound crop without the memory cost of a process pool.
+_UNZIP_WORKERS = min(4, os.cpu_count() or 1)
 
 # How far past the drawn AOI's own edge to extend the processed area (as a
 # fraction of the AOI's own width/height), so MintPy has room to pick a
@@ -114,13 +142,23 @@ def _subset_lalo(geometry: dict) -> Optional[str]:
     return f"{min_lat:.6f}:{max_lat:.6f},{min_lon:.6f}:{max_lon:.6f}"
 
 
-@lru_cache(maxsize=32)
+_thread_local = threading.local()
+
+
 def _transformer_from_wgs84(epsg: int) -> pyproj.Transformer:
-    """Cached: constructing a pyproj.Transformer re-parses the target CRS
-    each time, and every raster in one project shares the same EPSG (the
-    project's own UTM zone), so a real run cropping hundreds of files was
-    doing that work once per file instead of once overall."""
-    return pyproj.Transformer.from_crs(4326, epsg, always_xy=True)
+    """Cached per thread: constructing a pyproj.Transformer re-parses the
+    target CRS each time, and every raster in one project shares the same
+    EPSG (the project's own UTM zone), so a real run cropping hundreds of
+    files was doing that work once per file instead of once overall. Kept
+    per thread because unzip_all crops several zips concurrently and a
+    Transformer should not be shared across threads."""
+    cache = getattr(_thread_local, "transformers", None)
+    if cache is None:
+        cache = _thread_local.transformers = {}
+    transformer = cache.get(epsg)
+    if transformer is None:
+        transformer = cache[epsg] = pyproj.Transformer.from_crs(4326, epsg, always_xy=True)
+    return transformer
 
 
 def _native_crop_window(ds, bbox: Bbox) -> Optional[tuple[int, int, int, int]]:
@@ -128,8 +166,8 @@ def _native_crop_window(ds, bbox: Bbox) -> Optional[tuple[int, int, int, int]]:
     in `ds`'s own CRS and grid, clamped to the raster's own extent.
 
     This windows by whole pixels in the source's native grid rather than
-    reprojecting/resampling (e.g. via gdal.Warp with an EPSG:4326
-    outputBounds): a Warp-based crop was tested against a real file in this
+    reprojecting/resampling (e.g. via a GDAL warp with an EPSG:4326
+    output bounds): a Warp-based crop was tested against a real file in this
     repo and shifted the pixel size by about 0.2 m (80.0 m -> 79.8998 m),
     because computing a warp output also re-derives the resolution - that
     would silently interpolate every unwrapped-phase and water-mask pixel
@@ -142,17 +180,16 @@ def _native_crop_window(ds, bbox: Bbox) -> Optional[tuple[int, int, int, int]]:
 
     Returns None if `bbox` doesn't overlap the raster at all.
     """
-    gt = ds.GetGeoTransform()
-    x_origin, px_w, _, y_origin, _, px_h = gt
+    transform = ds.transform
+    x_origin, px_w, y_origin, px_h = transform.c, transform.a, transform.f, transform.e
 
-    srs = osr.SpatialReference(wkt=ds.GetProjection())
-    epsg = srs.GetAuthorityCode(None)
+    epsg = ds.crs.to_epsg() if ds.crs else None
     min_lon, min_lat, max_lon, max_lat = bbox
 
-    if epsg is not None and int(epsg) != 4326:
-        transformer = _transformer_from_wgs84(int(epsg))
+    if epsg is not None and epsg != 4326:
+        transformer = _transformer_from_wgs84(epsg)
         corners = [(min_lon, min_lat), (min_lon, max_lat), (max_lon, min_lat), (max_lon, max_lat)]
-        xs, ys = zip(*(transformer.transform(lon, lat) for lon, lat in corners))
+        xs, ys = zip(*(transformer.transform(lon, lat) for lon, lat in corners), strict=True)
         min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
     else:
         min_x, max_x, min_y, max_y = min_lon, max_lon, min_lat, max_lat
@@ -163,7 +200,7 @@ def _native_crop_window(ds, bbox: Bbox) -> Optional[tuple[int, int, int, int]]:
     row_max = -int(-(y_origin - min_y) // abs(px_h))
 
     col_min, row_min = max(0, col_min), max(0, row_min)
-    col_max, row_max = min(ds.RasterXSize, col_max), min(ds.RasterYSize, row_max)
+    col_max, row_max = min(ds.width, col_max), min(ds.height, row_max)
 
     xsize, ysize = col_max - col_min, row_max - row_min
     if xsize <= 0 or ysize <= 0:
@@ -182,6 +219,10 @@ def _extract_and_crop(zip_path: Path, member: str, dest_dir: Path, bbox: Bbox) -
     project in this repo - 261 zips x 6 files, up to ~30 MB each - this
     removes what was ~40 GB of redundant temp-file writes over one run.
 
+    The cropped file is DEFLATE-compressed (with the floating-point
+    predictor for float rasters); pixel values are unchanged, GDAL/MintPy
+    decompress transparently.
+
     Raises if the member's own footprint doesn't overlap `bbox` at all,
     rather than silently keeping the full file or skipping it: every HyP3
     interferogram delivered for a project was already selected because its
@@ -193,22 +234,43 @@ def _extract_and_crop(zip_path: Path, member: str, dest_dir: Path, bbox: Bbox) -
     target_path = dest_dir / member
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ds = gdal.Open(f"/vsizip/{zip_path}/{member}")
-    if ds is None:
-        raise RuntimeError(f"GDAL could not open member {member!r} inside {zip_path.name}")
-    window = _native_crop_window(ds, bbox)
-    if window is None:
-        ds = None
-        raise RuntimeError(
-            f"{member!r} does not overlap the project AOI bbox {bbox} - "
-            "this interferogram may not actually cover the area of interest."
+    try:
+        src = rasterio.open(f"/vsizip/{zip_path}/{member}")
+    except rasterio.errors.RasterioIOError as exc:
+        raise RuntimeError(f"GDAL could not open member {member!r} inside {zip_path.name}") from exc
+
+    with src:
+        window = _native_crop_window(src, bbox)
+        if window is None:
+            raise RuntimeError(
+                f"{member!r} does not overlap the project AOI bbox {bbox} "
+                "- this interferogram may not actually cover the area of interest."
+            )
+        xoff, yoff, xsize, ysize = window
+        win = Window(xoff, yoff, xsize, ysize)
+
+        profile = src.profile
+        profile.update(
+            driver="GTiff", width=xsize, height=ysize, transform=src.window_transform(win),
+            compress="deflate", tiled=False,
         )
-    xoff, yoff, xsize, ysize = window
-    result = gdal.Translate(str(target_path), ds, srcWin=[xoff, yoff, xsize, ysize])
-    ds = None
-    if result is None:
-        raise RuntimeError(f"GDAL failed to crop {member!r}")
-    result = None
+        profile.pop("blockxsize", None)
+        profile.pop("blockysize", None)
+        if src.dtypes[0].startswith("float"):
+            profile["predictor"] = 3
+
+        tmp_path = target_path.with_name(target_path.name + ".tmp")
+        try:
+            with rasterio.open(tmp_path, "w", **profile) as dst:
+                dst.write(src.read(window=win))
+                dst.update_tags(**src.tags())
+                for band, desc in enumerate(src.descriptions, start=1):
+                    if desc:
+                        dst.set_band_description(band, desc)
+            os.replace(tmp_path, target_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
 
 class MintPyAdapter:
@@ -254,30 +316,71 @@ class MintPyAdapter:
         """
         bbox = _padded_bbox(geometry) if geometry else None
 
-        zips = glob.glob(str(self.downloads_dir / "*.zip"))
-        for zpath in zips:
+        pending = []
+        for zpath in sorted(glob.glob(str(self.downloads_dir / "*.zip"))):
             zip_path = Path(zpath)
-            expected_dir = Path(zpath[:-4])
-            if expected_dir.is_dir():
-                continue
+            if not zip_path.with_suffix("").is_dir():
+                pending.append(zip_path)
+
+        # Zips are independent, so they are processed concurrently. On the
+        # first failure no new zip is started (zips already in flight finish
+        # or fail on their own); the error is then re-raised, and every zip
+        # that did not complete is left untouched for a re-run.
+        failed = threading.Event()
+
+        def _process(zip_path: Path) -> None:
+            if failed.is_set():
+                return
+            try:
+                self._extract_one(zip_path, bbox)
+            except BaseException:
+                failed.set()
+                raise
+
+        if len(pending) <= 1 or _UNZIP_WORKERS <= 1:
+            for zip_path in pending:
+                _process(zip_path)
+        else:
+            with ThreadPoolExecutor(max_workers=_UNZIP_WORKERS) as executor:
+                futures = [executor.submit(_process, zip_path) for zip_path in pending]
+            for future in futures:
+                future.result()  # re-raises the first failure
+
+        return sum(
+            1 for entry in self.downloads_dir.iterdir()
+            if entry.is_dir() and not entry.name.startswith(".")
+        )
+
+    def _extract_one(self, zip_path: Path, bbox: Optional[Bbox]) -> None:
+        """Extract (and crop, if `bbox`) one zip into a hidden staging
+        directory, then move it into place with a single rename.
+
+        The final directory only ever appears fully populated, so a crash or
+        failure midway can never leave a half-extracted directory that the
+        "output directory exists, skip" check in unzip_all would then treat
+        as done forever."""
+        final_dir = zip_path.with_suffix("")
+        staging = self.downloads_dir / f".{zip_path.stem}.partial"
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        try:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 members = [
                     name for name in zf.namelist()
                     if name.lower().endswith(_NEEDED_TIF_SUFFIXES) or _is_metadata_sidecar(name)
                 ]
                 for member in members:
-                    is_raster = member.lower().endswith(_NEEDED_TIF_SUFFIXES)
-                    if bbox is not None and is_raster:
-                        _extract_and_crop(zip_path, member, self.downloads_dir, bbox)
+                    if bbox is not None and member.lower().endswith(_NEEDED_TIF_SUFFIXES):
+                        _extract_and_crop(zip_path, member, staging, bbox)
                     else:
-                        zf.extract(member, self.downloads_dir)
+                        zf.extract(member, staging)
+            produced = staging / final_dir.name
+            os.replace(produced if produced.is_dir() else staging, final_dir)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
-            if bbox is not None:
-                zip_path.unlink()
-
-        return sum(
-            1 for entry in self.downloads_dir.iterdir() if entry.is_dir()
-        )
+        if bbox is not None:
+            zip_path.unlink()
 
     def write_config(self, config_path: Optional[Path] = None, geometry: Optional[dict] = None) -> Path:
         """Generate a smallbaselineApp.cfg for HyP3 data layout.
@@ -319,12 +422,12 @@ class MintPyAdapter:
             config_path = self.work_dir / "smallbaselineApp.cfg"
 
         cmd = [
-            "smallbaselineApp.py",
+            find_smallbaseline() or _SMALLBASELINE,
             str(config_path),
             "--work-dir", str(self.work_dir),
             "--dostep", "load_data",
         ]
-        return subprocess.run(cmd, check=False)
+        return subprocess.run(cmd, check=False, env=_mintpy_env())
 
     def run_full_pipeline(self, config_path: Optional[Path] = None) -> subprocess.CompletedProcess:
         """Run the full MintPy SBAS pipeline (all steps), blocking until done."""
@@ -332,11 +435,11 @@ class MintPyAdapter:
             config_path = self.work_dir / "smallbaselineApp.cfg"
 
         cmd = [
-            "smallbaselineApp.py",
+            find_smallbaseline() or _SMALLBASELINE,
             str(config_path),
             "--work-dir", str(self.work_dir),
         ]
-        return subprocess.run(cmd, check=False)
+        return subprocess.run(cmd, check=False, env=_mintpy_env())
 
     def start_full_pipeline(
         self,
@@ -357,9 +460,9 @@ class MintPyAdapter:
             log_path = self.work_dir / "mintpy.log"
 
         cmd = [
-            "smallbaselineApp.py",
+            find_smallbaseline() or _SMALLBASELINE,
             str(config_path),
             "--work-dir", str(self.work_dir),
         ]
         log_handle = log_path.open("w", encoding="utf-8")
-        return subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT)
+        return subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=_mintpy_env())

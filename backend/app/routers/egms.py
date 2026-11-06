@@ -18,6 +18,8 @@ from app.schemas import (
     MoveRequest, MoveStateOut, TimeSeriesOut,
 )
 from app.services import egms_download_queue, egms_points, egms_service, storage_move
+from app.services.json_response import json_response
+from app.services.series_analysis import with_analysis
 
 router = APIRouter(prefix="/api/egms", tags=["egms"])
 
@@ -159,7 +161,7 @@ def get_download_points(download_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Download not found")
     if row.level not in ("L2A", "L2B", "L3"):
         raise HTTPException(400, f"Unsupported level for point visualization: {row.level}")
-    return egms_points.extract_points(Path(row.destination_path), row.filenames, geometry=row.geometry)
+    return json_response(egms_points.extract_points(Path(row.destination_path), row.filenames, geometry=row.geometry))
 
 
 @router.get("/downloads/{download_id}/points/{point_id}/timeseries", response_model=TimeSeriesOut)
@@ -176,4 +178,4 @@ def get_point_time_series(download_id: str, point_id: str, db: Session = Depends
     series = egms_points.extract_time_series(Path(row.destination_path), row.filenames, point_id, geometry=row.geometry)
     if series is None:
         raise HTTPException(404, "Point not found in downloaded files")
-    return series
+    return with_analysis(series)

@@ -25,13 +25,13 @@ export function TrackPicker({ geometry, dateStart, dateEnd, onSelect }: TrackPic
       </div>
 
       {isError && (
-        <div style={{ padding: "10px 14px", background: "var(--danger-light)", border: "1px solid #fecaca", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13 }}>
+        <div style={{ padding: "10px 14px", background: "var(--danger-light)", border: "1px solid var(--danger-border)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13 }}>
           Search failed. Check the backend is running and your AOI is valid.
         </div>
       )}
 
       {tracks && tracks.length === 0 && (
-        <div style={{ padding: "14px", background: "var(--warning-light)", border: "1px solid #fed7aa", borderRadius: "var(--radius)", fontSize: 13, color: "#92400e" }}>
+        <div style={{ padding: "14px", background: "var(--warning-light)", border: "1px solid var(--warning-border)", borderRadius: "var(--radius)", fontSize: 13, color: "var(--warning)" }}>
           No tracks found for this area and date range.
         </div>
       )}
@@ -62,8 +62,8 @@ function TrackCard({ track, recommended, onSelect }: { track: TrackSummary; reco
         alignItems: "center",
         gap: 16,
         cursor: "pointer",
-        borderColor: recommended ? "#93c5fd" : "var(--border)",
-        background: recommended ? "#f0f7ff" : "white",
+        borderColor: recommended ? "var(--primary-border)" : "var(--border)",
+        background: recommended ? "var(--primary-light)" : "var(--panel)",
         transition: "box-shadow 0.15s",
       }}
       onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.boxShadow = "var(--shadow-md)"; }}
@@ -75,10 +75,10 @@ function TrackCard({ track, recommended, onSelect }: { track: TrackSummary; reco
           <span style={{ fontWeight: 600, fontSize: 14 }}>Track {track.track_number}</span>
           <span style={{
             padding: "1px 7px",
-            background: track.flight_direction === "DESCENDING" ? "#f0fdf4" : "#fff7ed",
-            color: track.flight_direction === "DESCENDING" ? "#15803d" : "#c2410c",
+            background: track.flight_direction === "DESCENDING" ? "var(--success-light)" : "var(--warning-light)",
+            color: track.flight_direction === "DESCENDING" ? "var(--success)" : "var(--warning)",
             border: "1px solid",
-            borderColor: track.flight_direction === "DESCENDING" ? "#bbf7d0" : "#fed7aa",
+            borderColor: track.flight_direction === "DESCENDING" ? "var(--primary-border)" : "var(--warning-border)",
             borderRadius: 9999,
             fontSize: 11,
             fontWeight: 600,

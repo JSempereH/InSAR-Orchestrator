@@ -4,20 +4,9 @@ import "maplibre-gl/dist/maplibre-gl.css";
 
 type Coord = [number, number];
 
-const OSM_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution:
-        '© <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors',
-      maxzoom: 19,
-    },
-  },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
-};
+// OpenFreeMap dark style: free, no API key, OpenStreetMap data (attribution is
+// included by the style itself).
+const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/dark";
 
 interface AOIMapProps {
   onGeometryChange: (geometry: GeoJSON.Geometry | null) => void;
@@ -46,7 +35,7 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: OSM_STYLE,
+      style: BASEMAP_STYLE,
       center: [0, 30],
       zoom: 2,
     });
@@ -64,19 +53,19 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
         id: "aoi-polygon-fill",
         type: "fill",
         source: "aoi-polygon",
-        paint: { "fill-color": "#2563eb", "fill-opacity": 0.12 },
+        paint: { "fill-color": "#3dff9a", "fill-opacity": 0.12 },
       });
       map.addLayer({
         id: "aoi-polygon-outline",
         type: "line",
         source: "aoi-polygon",
-        paint: { "line-color": "#2563eb", "line-width": 2.5 },
+        paint: { "line-color": "#3dff9a", "line-width": 2.5 },
       });
       map.addLayer({
         id: "aoi-line",
         type: "line",
         source: "aoi-line",
-        paint: { "line-color": "#2563eb", "line-width": 2, "line-dasharray": [3, 3] },
+        paint: { "line-color": "#3dff9a", "line-width": 2, "line-dasharray": [3, 3] },
       });
       map.addLayer({
         id: "aoi-points",
@@ -84,8 +73,8 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
         source: "aoi-points",
         paint: {
           "circle-radius": 5,
-          "circle-color": "#ffffff",
-          "circle-stroke-color": "#2563eb",
+          "circle-color": "#07090a",
+          "circle-stroke-color": "#3dff9a",
           "circle-stroke-width": 2,
         },
       });
@@ -189,11 +178,12 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
           {drawing && (
             <>
               <div style={{
-                background: "rgba(255,255,255,0.97)",
+                background: "rgba(10,14,13,0.88)",
+                backdropFilter: "blur(8px)",
+                color: "var(--text)",
                 padding: "6px 11px",
                 borderRadius: "var(--radius)",
                 fontSize: 12,
-                color: "var(--text-muted)",
                 border: "1px solid var(--border)",
                 boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
               }}>
@@ -223,7 +213,7 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
                 fontSize: 12,
                 color: "var(--primary-text)",
                 fontWeight: 500,
-                border: "1px solid #bfdbfe",
+                border: "1px solid var(--primary-border)",
                 boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
               }}>
                 ✓ AOI defined
@@ -242,7 +232,7 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
         <div style={{
           position: "absolute", inset: 0,
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-          background: "#f8fafc", gap: 8,
+          background: "var(--panel)", gap: 8,
         }}>
           <div style={{ fontSize: 24 }}>🗺</div>
           <div style={{ fontSize: 13, color: "var(--text-muted)" }}>Loading map…</div>

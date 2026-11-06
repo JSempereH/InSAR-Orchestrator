@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     # If absent, a new key is generated at startup (credentials won't survive restarts).
     secret_key: str = ""
+    # rclone executable used for backups (name on PATH or a full path).
+    rclone_path: str = "rclone"
+    # When set, the whole API requires signing in with this password.
+    # Leave empty only on a machine nobody else can reach (localhost, a VPN).
+    app_password: str = ""
+    # Folder holding the built frontend (index.html and assets). When set, the
+    # backend serves the UI itself, so one port and one container is enough.
+    frontend_dir: str = ""
 
     class Config:
         env_file = ".env"

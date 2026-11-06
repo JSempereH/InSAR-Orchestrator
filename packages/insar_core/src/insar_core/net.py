@@ -17,6 +17,14 @@ _CHUNK = 1024 * 1024  # 1 MB
 # the previous attempt left off instead of re-downloading bytes already on
 # disk.
 _MAX_RETRIES = 3
+
+# 4xx responses are normally permanent (bad URL, expired auth), except these
+# two, which mean "try again shortly": request timeout and rate limiting.
+_RETRYABLE_4XX = {408, 429}
+
+
+def _is_permanent_client_error(status: Optional[int]) -> bool:
+    return status is not None and 400 <= status < 500 and status not in _RETRYABLE_4XX
 _RETRY_BACKOFF_S = 2.0  # doubled after each failed attempt
 
 
@@ -64,7 +72,7 @@ def stream_download(
             break
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
-            if status is not None and 400 <= status < 500:
+            if _is_permanent_client_error(status):
                 raise  # client error (bad URL, expired auth, ...) - retrying won't help
             attempt = _retry_or_raise(exc, dest.name, attempt, max_retries)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
@@ -105,7 +113,7 @@ def request_with_retry(method: str, url: str, *, max_retries: int = _MAX_RETRIES
             return resp
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
-            if status is not None and 400 <= status < 500:
+            if _is_permanent_client_error(status):
                 raise
             attempt = _retry_or_raise(exc, url, attempt, max_retries)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
@@ -124,6 +132,12 @@ def _attempt_download(
         req_headers["Range"] = f"bytes={resume_from}-"
 
     with requester.get(url, headers=req_headers, stream=True, timeout=timeout) as r:
+        if resume_from and r.status_code == 416:
+            # Range Not Satisfiable: the .part file is already as long as (or
+            # longer than) the remote file, or the remote file changed. Either
+            # way it can't be trusted - discard it and retry from byte zero.
+            tmp_dest.unlink(missing_ok=True)
+            raise requests.exceptions.ConnectionError("partial download no longer matches the remote file, restarting")
         resumed = resume_from and r.status_code == 206
         if resume_from and not resumed:
             # Server ignored the Range request (plain 200) - it doesn't

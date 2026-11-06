@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { credentialsApi } from "../api/client";
+import { BackupCard } from "../components/BackupCard";
 import { CredentialCard, useCredentialSave } from "../components/CredentialCard";
 
 export function SettingsPage() {
@@ -28,7 +29,7 @@ export function SettingsPage() {
 
       <CredentialCard
         icon="🔑"
-        iconBg="#e0f2fe"
+        iconBg="var(--info-light)"
         title="NASA Earthdata"
         description={
           <>
@@ -73,7 +74,7 @@ export function SettingsPage() {
 
       <CredentialCard
         icon="⛰"
-        iconBg="#dcfce7"
+        iconBg="var(--success-light)"
         title="Copernicus EGMS"
         description={
           <>
@@ -105,12 +106,14 @@ export function SettingsPage() {
         </div>
       </CredentialCard>
 
+      <BackupCard />
+
       {/* Secret key hint */}
       <div className="card" style={{ padding: 20 }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
           <div style={{
             width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-            background: "#fef3c7",
+            background: "var(--warning-light)",
             display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20,
           }}>
             🔐
@@ -118,22 +121,22 @@ export function SettingsPage() {
           <div style={{ flex: 1 }}>
             <h3 style={{ marginBottom: 4 }}>Encryption key</h3>
             <p style={{ margin: "0 0 12px", fontSize: 13, color: "var(--text-muted)" }}>
-              Add <code style={{ background: "#f1f5f9", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>SECRET_KEY</code> to{" "}
-              <code style={{ background: "#f1f5f9", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>backend/.env</code>{" "}
+              Add <code style={{ background: "var(--panel-hi)", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>SECRET_KEY</code> to{" "}
+              <code style={{ background: "var(--panel-hi)", padding: "1px 5px", borderRadius: 4, fontSize: 12 }}>backend/.env</code>{" "}
               so encrypted credentials persist across backend restarts.
             </p>
             <div style={{
               background: "#0f172a",
-              color: "#94a3b8",
+              color: "var(--text-muted)",
               borderRadius: "var(--radius)",
               padding: "12px 16px",
               fontFamily: "monospace",
               fontSize: 12,
               lineHeight: 1.6,
             }}>
-              <span style={{ color: "#64748b" }}># Run once and copy the output into backend/.env</span>
+              <span style={{ color: "var(--text-faint)" }}># Run once and copy the output into backend/.env</span>
               {"\n"}
-              <span style={{ color: "#93c5fd" }}>python</span>
+              <span style={{ color: "var(--accent)" }}>python</span>
               {' -c "from cryptography.fernet import Fernet; print(\'SECRET_KEY=\' + Fernet.generate_key().decode())"'}
             </div>
           </div>

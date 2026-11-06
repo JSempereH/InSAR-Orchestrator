@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>InSAR Orchestrator pipeline animation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; background: #07090a; }
+  canvas { display: block; width: 1280px; height: 720px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="720"></canvas>
+<script>
+/*
+ * Deterministic animation: window.draw(t) renders the frame at time t (seconds).
+ * Open this file in a browser to preview it (it loops), or run render.mjs to
+ * export frames and encode them with ffmpeg.
+ */
+const W = 1280, H = 720;
+const DURATION = 33;
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+const C = {
+  bg: '#07090a', text: '#eef2f0', muted: '#8a9490', faint: '#4a5350',
+  accent: '#3dff9a', accent2: '#00c2a8', rgb: '61,255,154', bad: '#ff5d6c',
+};
+const F = { display: '600 {s}px Sora, sans-serif', body: '500 {s}px Figtree, sans-serif', mono: '400 {s}px "JetBrains Mono", monospace' };
+const font = (k, s) => F[k].replace('{s}', s);
+
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const mixHex = (a, b, k) => {
+  const pa = [1, 3, 5].map((o) => parseInt(a.slice(o, o + 2), 16)), pb = [1, 3, 5].map((o) => parseInt(b.slice(o, o + 2), 16));
+  return `rgb(${pa.map((v, i) => Math.round(lerp(v, pb[i], k))).join(',')})`;
+};
+const lerp = (a, b, k) => a + (b - a) * k;
+const easeOut = k => 1 - Math.pow(1 - k, 3);
+const easeOutBack = k => 1 + 2.70158 * Math.pow(k - 1, 3) + 1.70158 * Math.pow(k - 1, 2);
+const easeInOut = k => (k < .5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
+let seed = 3;
+const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const rgba = (a) => `rgba(${C.rgb},${a})`;
+
+// Scene timing (seconds)
+const S = [
+  { id: 'title', a: 0, b: 3.2 },
+  { id: 'aoi', a: 3.2, b: 8 },
+  { id: 'search', a: 8, b: 12.6 },
+  { id: 'pairs', a: 12.6, b: 17.4 },
+  { id: 'process', a: 17.4, b: 26 },
+  { id: 'mintpy', a: 26, b: 31 },
+  { id: 'outro', a: 31, b: 33 },
+];
+const STEPS = [
+  { scene: 'aoi', n: '01', title: 'Draw your area of interest', sub: 'Any polygon on the map' },
+  { scene: 'search', n: '02', title: 'Find Sentinel-1 scenes', sub: 'Tracks and dates from the ASF catalog' },
+  { scene: 'pairs', n: '03', title: 'Build the SBAS pair network', sub: 'Each scene paired with its next temporal neighbours' },
+  { scene: 'process', n: '04', title: 'Process on HyP3, download, crop', sub: 'Only your AOI stays on disk' },
+  { scene: 'mintpy', n: '05', title: 'Run MintPy and read the motion', sub: 'Velocity map and displacement at any point' },
+];
+
+// Precomputed terrain contours for the background of the map scenes
+const contours = [];
+for (let k = 0; k < 9; k++) {
+  const pts = [];
+  const r0 = 40 + k * 38, cx = 560 + Math.sin(k) * 30, cy = 330 + Math.cos(k * 1.3) * 20;
+  const ph = [rnd() * 6, rnd() * 6, rnd() * 6];
+  for (let i = 0; i <= 90; i++) {
+    const a = (i / 90) * Math.PI * 2;
+    const r = r0 * (1 + .12 * Math.sin(3 * a + ph[0]) + .07 * Math.sin(5 * a + ph[1]) + .04 * Math.sin(8 * a + ph[2]));
+    pts.push([cx + Math.cos(a) * r * 1.5, cy + Math.sin(a) * r * .95]);
+  }
+  contours.push(pts);
+}
+
+function background(t) {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  let g = ctx.createRadialGradient(W * .85, -40, 0, W * .85, -40, 700);
+  g.addColorStop(0, rgba(.16)); g.addColorStop(1, rgba(0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  g = ctx.createRadialGradient(-20, H + 20, 0, -20, H + 20, 560);
+  g.addColorStop(0, rgba(.09)); g.addColorStop(1, rgba(0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.045)'; ctx.lineWidth = 1;
+  // Static on purpose: a moving background changes every pixel each frame and makes the GIF huge.
+  for (let x = 0; x < W; x += 56) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 56) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+}
+
+function glassPanel(x, y, w, h, r = 18, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha;
+  const g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, 'rgba(255,255,255,0.075)'); g.addColorStop(.4, 'rgba(255,255,255,0.025)'); g.addColorStop(1, 'rgba(255,255,255,0.015)');
+  rr(x, y, w, h, r); ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.09)'; ctx.lineWidth = 1; ctx.stroke();
+  const tl = ctx.createLinearGradient(x + w * .12, 0, x + w * .88, 0);
+  tl.addColorStop(0, rgba(0)); tl.addColorStop(.5, rgba(.7)); tl.addColorStop(1, rgba(0));
+  ctx.fillStyle = tl; ctx.fillRect(x + w * .12, y, w * .76, 1);
+  ctx.restore();
+}
+function rr(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+// Brand mark, same geometry as frontend/public/logo.svg (64 x 64 units).
+const LOGO_S = new Path2D('M52 22 C52 16 47 15 41 15 C35 15 30 17.5 30 23 C30 29.5 36 31 41 32 C47 33.5 52 35 52 41.5 C52 47 47 49 41 49 C35 49 30 47 30 41');
+function drawLogo(cx, cy, size, glow = 0) {
+  ctx.save(); ctx.translate(cx - size / 2, cy - size / 2); ctx.scale(size / 64, size / 64);
+  const g = ctx.createLinearGradient(0, 0, 64, 64); g.addColorStop(0, C.accent); g.addColorStop(1, C.accent2);
+  if (glow) { ctx.shadowColor = rgba(.6); ctx.shadowBlur = glow * 64 / size; }
+  rr(0, 0, 64, 64, 16); ctx.fillStyle = g; ctx.fill(); ctx.shadowBlur = 0;
+  ctx.save(); rr(0, 0, 64, 64, 16); ctx.clip();
+  ctx.strokeStyle = 'rgba(4,17,10,0.2)'; ctx.lineWidth = 1.6;
+  for (const r of [22, 36, 50]) { ctx.beginPath(); ctx.arc(50, 14, r, 0, Math.PI * 2); ctx.stroke(); }
+  ctx.restore();
+  ctx.translate(-2.5, 0); ctx.strokeStyle = '#04110a'; ctx.lineWidth = 6.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(17, 15); ctx.lineTo(17, 49); ctx.stroke(); ctx.stroke(LOGO_S);
+  ctx.restore();
+}
+function text(s, x, y, f, color = C.text, align = 'left', alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.font = f; ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = 'alphabetic';
+  ctx.fillText(s, x, y); ctx.restore();
+}
+function chip(s, x, y, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.font = font('mono', 15);
+  const w = ctx.measureText(s).width + 28;
+  rr(x, y - 22, w, 32, 16); ctx.fillStyle = rgba(.1); ctx.fill(); ctx.strokeStyle = rgba(.4); ctx.lineWidth = 1; ctx.stroke();
+  ctx.fillStyle = C.accent; ctx.textBaseline = 'middle'; ctx.fillText(s, x + 14, y - 5); ctx.restore();
+  return w;
+}
+function glowLine(pts, width = 2.5, alpha = 1) {
+  ctx.save(); ctx.globalAlpha = alpha; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  ctx.shadowColor = C.accent; ctx.shadowBlur = 16; ctx.strokeStyle = C.accent; ctx.lineWidth = width;
+  ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]))); ctx.stroke(); ctx.restore();
+}
+
+// Shared AOI polygon (a Madrid-like quadrilateral), in map-area coordinates
+const AOI = [[470, 215], [650, 235], [640, 395], [480, 372]];
+function polyPath(pts, scale = 1, ox = 0, oy = 0, cx = 560, cy = 305) {
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = cx + (p[0] - cx) * scale + ox, y = cy + (p[1] - cy) * scale + oy;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  });
+  ctx.closePath();
+}
+
+/* ---------- Scenes ---------- */
+
+function sceneTitle(t) {
+  const k = easeOut(seg(t, 0.2, 1.4)), fade = 1 - seg(t, 2.6, 3.2);
+  ctx.save(); ctx.globalAlpha = fade;
+  const cx = W / 2, cy = 290;
+  // logo tile
+  ctx.save(); ctx.globalAlpha = fade * k; drawLogo(cx, cy - 20, 104 * lerp(.6, 1, k), 50); ctx.restore();
+  text('InSAR Orchestrator', cx, cy + 110, font('display', 58), C.text, 'center', k);
+  ctx.restore();
+}
+
+function mapArea(alpha = 1) {
+  glassPanel(60, 100, 1160, 420, 22, alpha);
+  ctx.save(); ctx.globalAlpha = alpha; rr(60, 100, 1160, 420, 22); ctx.clip();
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
+  contours.forEach(pts => { ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(p[0] + 80, p[1]) : ctx.moveTo(p[0] + 80, p[1]))); ctx.stroke(); });
+  ctx.restore();
+}
+
+function sceneAOI(t, t0) {
+  const lt = t - t0;
+  mapArea(easeOut(seg(lt, 0, .5)));
+
+  // A cursor walks the outline: it eases along each side, pauses on each vertex
+  // (which pulses once), and returns to the first vertex. The fill fades in after the loop closes.
+  const START = .45, TRAVEL = .66, PAUSE = .14, SIDE = TRAVEL + PAUSE;
+  const loop = [...AOI, AOI[0]];
+  const sides = loop.length - 1;
+  const local = lt - START;
+  const closedAt = (sides - 1) * SIDE + TRAVEL;  // local time when the last side reaches the start
+
+  const trail = [loop[0]];
+  let cursor = loop[0];
+  for (let i = 0; i < sides; i++) {
+    const k = easeInOut(clamp((local - i * SIDE) / TRAVEL));
+    if (local - i * SIDE <= 0) break;
+    cursor = [lerp(loop[i][0], loop[i + 1][0], k), lerp(loop[i][1], loop[i + 1][1], k)];
+    trail.push(cursor);
+  }
+
+  ctx.save(); rr(60, 100, 1160, 420, 22); ctx.clip();
+  ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+  const fillK = easeInOut(seg(local, closedAt, closedAt + .7));
+  if (fillK > 0) { polyPath(AOI); ctx.fillStyle = rgba(.2 * fillK); ctx.fill(); }
+  if (local > 0 && trail.length > 1) {
+    const pulse = Math.sin(Math.PI * seg(local, closedAt, closedAt + .6));  // a brief swell of the glow on closing
+    ctx.save(); ctx.shadowColor = C.accent; ctx.shadowBlur = 12 + 12 * pulse; ctx.strokeStyle = C.accent; ctx.lineWidth = 3 + 1.2 * pulse;
+    ctx.beginPath(); trail.forEach((p, k) => (k ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]))); ctx.stroke(); ctx.restore();
+  }
+  // vertices: pop in (with a little overshoot) and send out a ripple when the cursor reaches them
+  AOI.forEach((v, j) => {
+    const reached = j === 0 ? 0 : (j - 1) * SIDE + TRAVEL;
+    const age = local - reached;
+    if (age < 0) return;
+    const pop = easeOutBack(clamp(age / .28));
+    ctx.beginPath(); ctx.arc(v[0], v[1], 7 * pop, 0, 7); ctx.fillStyle = '#07090a'; ctx.fill();
+    ctx.strokeStyle = C.accent; ctx.lineWidth = 2.5; ctx.stroke();
+    const ripple = clamp(age / .55);
+    if (ripple < 1) { ctx.beginPath(); ctx.arc(v[0], v[1], 7 + 20 * easeOut(ripple), 0, 7); ctx.strokeStyle = rgba(.55 * (1 - ripple)); ctx.lineWidth = 2; ctx.stroke(); }
+  });
+  ctx.restore();
+
+  // the cursor, fading away once the loop is closed
+  const cursorA = easeOut(seg(local, 0, .25)) * (1 - easeOut(seg(local, closedAt + .05, closedAt + .35)));
+  if (cursorA > 0.01) {
+    ctx.save(); ctx.globalAlpha = cursorA;
+    ctx.shadowColor = '#ffffff'; ctx.shadowBlur = 12; ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.arc(cursor[0], cursor[1], 4.5, 0, 7); ctx.fill(); ctx.restore();
+  }
+  const chipK = easeOut(seg(local, closedAt + .35, closedAt + .85));
+  if (chipK > 0) chip('AOI · about 4 x 4 km', 700, 250 - (1 - chipK) * 8, chipK);
+}
+
+// Sentinel-1 swath footprints as skewed parallelograms
+// The selected swath (index 2) is wide enough to contain the whole AOI polygon.
+const SWATHS = [
+  { x: 60, w: 190 }, { x: 215, w: 190 }, { x: 370, w: 320 }, { x: 760, w: 190 }, { x: 930, w: 190 },
+];
+function swathPath(x, w = 190, h = 520, skew = 90, y0 = 90) {
+  ctx.beginPath(); ctx.moveTo(x + skew, y0); ctx.lineTo(x + skew + w, y0); ctx.lineTo(x + w, y0 + h); ctx.lineTo(x, y0 + h); ctx.closePath();
+}
+function sceneSearch(t, t0) {
+  const lt = t - t0;
+  mapArea(1);
+  ctx.save(); rr(60, 100, 1160, 420, 22); ctx.clip();
+  SWATHS.forEach((s, i) => {
+    const k = easeOut(seg(lt, .3 + i * .22, .9 + i * .22));
+    const sel = i === 2;
+    const hl = sel ? easeOut(seg(lt, 2.0, 2.6)) : 0;
+    ctx.save(); ctx.translate(0, (1 - k) * -80); ctx.globalAlpha = k * (sel ? 1 : lerp(1, .35, hl));
+    swathPath(s.x, s.w);
+    ctx.fillStyle = sel ? rgba(.04 + .1 * hl) : 'rgba(255,255,255,0.03)'; ctx.fill();
+    ctx.strokeStyle = sel ? rgba(.25 + .75 * hl) : 'rgba(255,255,255,0.22)'; ctx.lineWidth = sel ? 1.5 + 1.5 * hl : 1.2;
+    ctx.setLineDash(sel ? [] : [6, 6]); ctx.stroke(); ctx.restore();
+  });
+  // AOI
+  polyPath(AOI); ctx.fillStyle = rgba(.2); ctx.fill(); ctx.strokeStyle = C.accent; ctx.lineWidth = 3; ctx.stroke();
+  ctx.restore();
+  const hl = easeOut(seg(lt, 2.2, 2.9));
+  if (hl > 0) chip('Track 1 · ascending · covers the whole AOI', 700, 160, hl);
+  // acquisition timeline
+  const tl = easeOut(seg(lt, 2.8, 3.4));
+  if (tl > 0) {
+    ctx.save(); ctx.globalAlpha = tl;
+    const x0 = 100, x1 = 1180, y = 478;
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    const count = Math.round(84 * easeInOut(seg(lt, 2.9, 4.2)));
+    seed = 11;
+    for (let i = 0; i < count; i++) {
+      const x = x0 + (i / 83) * (x1 - x0);
+      ctx.fillStyle = C.accent; ctx.shadowColor = C.accent; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.arc(x, y, 3.2, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+    text(`${count} acquisitions`, 100, 452, font('mono', 15), C.accent, 'left', tl);
+    text('12-day repeat', 1180, 452, font('mono', 15), C.muted, 'right', tl);
+  }
+}
+
+function scenePairs(t, t0) {
+  const lt = t - t0;
+  glassPanel(60, 100, 1160, 420, 22, easeOut(seg(lt, 0, .5)));
+  const n = 14, x0 = 130, x1 = 1150, y = 440;
+  const X = i => x0 + (i / (n - 1)) * (x1 - x0);
+  // nodes
+  for (let i = 0; i < n; i++) {
+    const k = easeOut(seg(lt, .3 + i * .05, .7 + i * .05));
+    ctx.save(); ctx.globalAlpha = k; ctx.fillStyle = '#07090a'; ctx.strokeStyle = C.accent; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(X(i), y, 9, 0, 7); ctx.fill(); ctx.stroke(); ctx.restore();
+    if (i % 3 === 0) text(`S${i + 1}`, X(i), y + 36, font('mono', 14), C.muted, 'center', k);
+  }
+  // arcs: each scene to its next three neighbours
+  let pairs = 0, idx = 0;
+  const total = 36;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j <= Math.min(i + 3, n - 1); j++) {
+      const k = easeOut(seg(lt, 1.3 + idx * .06, 1.75 + idx * .06)); idx++;
+      if (k <= 0) continue;
+      if (k >= .98) pairs++;
+      const xa = X(i), xb = X(j), mid = (xa + xb) / 2, h = (xb - xa) * .32 * (j - i === 1 ? .75 : 1);
+      ctx.save(); ctx.lineWidth = 2; ctx.strokeStyle = rgba(lerp(.9, .45, (j - i - 1) / 2));
+      ctx.shadowColor = C.accent; ctx.shadowBlur = 8; ctx.beginPath(); ctx.moveTo(xa, y - 9);
+      const steps = 30, last = Math.floor(steps * k);
+      for (let s = 1; s <= last; s++) {
+        const u = s / steps, px = lerp(xa, xb, u), py = y - 9 - Math.sin(u * Math.PI) * h;
+        ctx.lineTo(px, py);
+      }
+      ctx.stroke(); ctx.restore();
+    }
+  }
+  const ck = easeOut(seg(lt, 1.2, 1.8));
+  text(`${n} scenes`, 130, 170, font('display', 34), C.text, 'left', ck);
+  text(`${pairs}`, 130, 245, font('display', 76), C.accent, 'left', ck);
+  ctx.font = font('display', 76);
+  const numW = ctx.measureText(String(total)).width;
+  text(`of ${total} pairs`, 130 + numW + 14, 245, font('body', 24), C.muted, 'left', ck);
+  text('3 temporal neighbours per scene', 130, 285, font('mono', 15), C.muted, 'left', ck);
+}
+
+function sceneProcess(t, t0) {
+  const lt = t - t0;
+  glassPanel(60, 100, 1160, 420, 22, easeOut(seg(lt, 0, .5)));
+  // Phase A: HyP3 jobs grid (0.4s to 3.0s), Phase B: crop (3.0s onwards)
+  const A = 1 - seg(lt, 2.7, 3.2);
+  if (A > 0) {
+    const cols = 12, rows = 3, cw = 58, ch = 58, gx = 12, gy = 12;
+    const gw = cols * cw + (cols - 1) * gx, ox = 100, oy = 225;
+    let done = 0;
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const i = r * cols + c, start = .4 + (i / 36) * 1.6, run = .35;
+      const state = lt < start ? 0 : lt < start + run ? 1 : 2;
+      if (state === 2) done++;
+      const x = ox + c * (cw + gx), y = oy + r * (ch + gy);
+      ctx.save(); ctx.globalAlpha = A;
+      rr(x, y, cw, ch, 10);
+      if (state === 0) { ctx.fillStyle = 'rgba(255,255,255,0.035)'; ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.stroke(); }
+      if (state === 1) { const p = .5 + .5 * Math.sin(lt * 14); ctx.fillStyle = rgba(.1 + .1 * p); ctx.fill(); ctx.strokeStyle = rgba(.7); ctx.lineWidth = 1.5; ctx.stroke(); }
+      if (state === 2) { const g = ctx.createLinearGradient(x, y, x + cw, y + ch); g.addColorStop(0, C.accent); g.addColorStop(1, C.accent2); ctx.fillStyle = g; ctx.shadowColor = rgba(.4); ctx.shadowBlur = 10; ctx.fill(); }
+      ctx.restore();
+    }
+    text('HyP3 interferograms', ox, 175, font('display', 26), C.text, 'left', A);
+    text(`${done} / 36 succeeded`, ox + gw, 175, font('mono', 17), C.accent, 'right', A);
+    // right column stats
+    text('10', 1010, 270, font('display', 54), C.text, 'left', A);
+    text('credits per job', 1010, 300, font('body', 18), C.muted, 'left', A);
+    text(`${Math.round(done / 36 * 100)}%`, 1010, 385, font('display', 54), C.accent, 'left', A);
+    text('auto-download', 1010, 415, font('body', 18), C.muted, 'left', A);
+  }
+  // Phase B: the full scene shrinks to the AOI window. Slow on purpose: this is the benefit people
+  // need to take in, so it holds on the full size first, shrinks gently, then holds on the result.
+  const B = easeOut(seg(lt, 3.1, 3.8));
+  if (B > 0) {
+    const SHRINK_FROM = 4.9, SHRINK_TO = 7.0;
+    const shrink = easeInOut(seg(lt, SHRINK_FROM, SHRINK_TO));
+    const fullW = 560, fullH = 300, cx = 380, cy = 315;
+    const sw = lerp(fullW, 70, shrink), sh = lerp(fullH, 38, shrink);
+    ctx.save(); ctx.globalAlpha = B;
+    // faint full-scene outline stays as reference
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.setLineDash([6, 6]); ctx.strokeRect(cx - fullW / 2, cy - fullH / 2, fullW, fullH); ctx.setLineDash([]);
+    // raster texture (a fixed cell size, so nothing pops while it shrinks)
+    ctx.save(); rr(cx - sw / 2, cy - sh / 2, sw, sh, 6); ctx.clip();
+    seed = 5;
+    const step = 8;
+    for (let x = cx - sw / 2; x < cx + sw / 2; x += step) for (let y = cy - sh / 2; y < cy + sh / 2; y += step) {
+      const v = (Math.sin(x * .05) + Math.cos(y * .07) + rnd() * .6);
+      ctx.fillStyle = rgba(.08 + .2 * (v + 1) / 3); ctx.fillRect(x, y, step - 1, step - 1);
+    }
+    ctx.restore();
+    ctx.strokeStyle = C.accent; ctx.lineWidth = 2.5; ctx.shadowColor = C.accent; ctx.shadowBlur = 14; rr(cx - sw / 2, cy - sh / 2, sw, sh, 6); ctx.stroke();
+    ctx.restore();
+
+    // size readout: counts down on a log scale from about 80 GB to about 300 MB, in step with the shrinking window
+    const gb = 80 * Math.pow(0.3 / 80, shrink);
+    const size = gb >= 10 ? `${Math.round(gb)} GB` : gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(gb * 100) * 10} MB`;
+    // the label changes in two steps (one fades out, then the other in) so the two never overlap
+    const labelOut = easeInOut(seg(lt, SHRINK_TO - .8, SHRINK_TO - .45));
+    const labelIn = easeInOut(seg(lt, SHRINK_TO - .45, SHRINK_TO - .1));
+    text('Full scenes', 700, 250, font('body', 20), C.muted, 'left', B * (1 - labelOut));
+    text('Cropped to your AOI', 700, 250, font('body', 20), C.muted, 'left', B * labelIn);
+    text(`about ${size}`, 700, 315, font('display', 52), mixHex(C.text, C.accent, shrink), 'left', B);
+    text('on disk', 700, 348, font('mono', 15), C.muted, 'left', B);
+    const note = easeOut(seg(lt, SHRINK_TO - .2, SHRINK_TO + .5));
+    text('Source zips are deleted once cropped', 700, 410, font('mono', 15), C.muted, 'left', note);
+  }
+}
+
+// Synthetic displacement field shared by the velocity map and the time series
+const field = (u, v) => -1 * Math.exp(-(((u - .38) ** 2) / .03 + ((v - .55) ** 2) / .05)) + .45 * Math.exp(-(((u - .78) ** 2) / .02 + ((v - .28) ** 2) / .02)) + .08 * Math.sin(u * 9) * Math.cos(v * 7);
+function sceneMintpy(t, t0) {
+  const lt = t - t0;
+  glassPanel(60, 100, 1160, 420, 22, easeOut(seg(lt, 0, .5)));
+  const mx = 100, my = 140, mw = 560, mh = 340;
+  const slide = easeInOut(seg(lt, 2.6, 3.4));
+  const offx = -slide * 0; // map stays; chart slides in
+  ctx.save(); rr(mx, my, mw, mh, 14); ctx.clip();
+  ctx.fillStyle = 'rgba(0,0,0,0.3)'; ctx.fillRect(mx, my, mw, mh);
+  const cell = 9, cols = Math.floor(mw / cell), rows = Math.floor(mh / cell);
+  for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
+    const u = c / cols, v = r / rows;
+    const d = Math.hypot(u - .5, v - .5);
+    const k = easeOut(seg(lt, .4 + d * 1.6, .9 + d * 1.6));
+    if (k <= 0) continue;
+    const f = field(u, v), a = Math.abs(f);
+    const col = f < 0 ? '255,93,108' : '61,255,154';
+    ctx.fillStyle = `rgba(${col},${(.1 + .8 * Math.min(1, a * 1.1)) * k})`;
+    ctx.fillRect(mx + c * cell, my + r * cell, cell - 2, cell - 2);
+  }
+  ctx.restore();
+  text('Velocity map', mx, 128, font('display', 20), C.text, 'left', easeOut(seg(lt, .3, .8)));
+  // legend
+  const lg = ctx.createLinearGradient(mx + 380, 0, mx + 540, 0); lg.addColorStop(0, C.bad); lg.addColorStop(.5, '#8a9490'); lg.addColorStop(1, C.accent);
+  ctx.save(); ctx.globalAlpha = easeOut(seg(lt, 1.8, 2.3)); ctx.fillStyle = lg; rr(mx + 380, 124, 160, 8, 4); ctx.fill(); ctx.restore();
+  // target marker moves to the subsidence bowl
+  const tk = easeInOut(seg(lt, 2.0, 2.8));
+  const tx = lerp(mx + mw * .8, mx + mw * .38, tk), ty = lerp(my + mh * .2, my + mh * .55, tk);
+  if (lt > 1.9) {
+    const pulse = (lt * 1.6) % 1;
+    ctx.save(); ctx.globalAlpha = easeOut(seg(lt, 1.9, 2.2));
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(tx, ty, 9, 0, 7); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(tx, ty, 3, 0, 7); ctx.fill();
+    if (lt > 2.8) { ctx.strokeStyle = rgba(1 - pulse); ctx.beginPath(); ctx.arc(tx, ty, 9 + pulse * 22, 0, 7); ctx.stroke(); }
+    ctx.restore();
+  }
+  // chart panel
+  if (slide > 0) {
+    const px = 700, py = 140, pw = 480, ph = 340;
+    ctx.save(); ctx.globalAlpha = slide; ctx.translate((1 - slide) * 40, 0);
+    glassPanel(px, py, pw, ph, 16);
+    text('Displacement at the selected point', px + 24, py + 36, font('display', 18), C.text);
+    const x0 = px + 54, x1 = px + pw - 24, y0 = py + 70, y1 = py + ph - 44;
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) { const y = lerp(y0, y1, i / 4); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); text(String(Math.round(lerp(10, -30, i / 4))), x0 - 10, y + 4, font('mono', 12), C.muted, 'right'); }
+    text('mm', x0 - 10, y0 - 14, font('mono', 12), C.muted, 'right');
+    seed = 21; const N = 70, pts = []; let v = 0;
+    for (let i = 0; i < N; i++) { v += -.45 + (rnd() - .5) * 1.6 + Math.sin(i / 6) * .3; pts.push(v); }
+    const sy = val => lerp(y0, y1, (10 - val) / 40);
+    const prog = easeInOut(seg(lt, 3.2, 4.6));
+    const upto = Math.floor(prog * (N - 1));
+    const line = []; for (let i = 0; i <= upto; i++) line.push([lerp(x0, x1, i / (N - 1)), sy(pts[i])]);
+    if (line.length > 1) {
+      ctx.save(); const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, rgba(.3)); g.addColorStop(1, rgba(0));
+      ctx.beginPath(); line.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]))); ctx.lineTo(line[line.length - 1][0], y1); ctx.lineTo(x0, y1); ctx.closePath(); ctx.fillStyle = g; ctx.fill(); ctx.restore();
+      glowLine(line, 2.6);
+      const e = line[line.length - 1]; ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(e[0], e[1], 5, 0, 7); ctx.fill(); ctx.strokeStyle = C.accent; ctx.lineWidth = 2; ctx.stroke();
+    }
+    const tr = easeOut(seg(lt, 4.5, 5));
+    if (tr > 0) {
+      const mean = pts.reduce((a, b) => a + b) / N; let sxy = 0, sxx = 0;
+      pts.forEach((p, i) => { sxy += (i - (N - 1) / 2) * (p - mean); sxx += (i - (N - 1) / 2) ** 2; });
+      const m = sxy / sxx, b0 = mean - m * (N - 1) / 2;
+      ctx.save(); ctx.globalAlpha = tr; ctx.setLineDash([7, 6]); ctx.strokeStyle = 'rgba(255,255,255,0.65)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x0, sy(b0)); ctx.lineTo(x1, sy(b0 + m * (N - 1))); ctx.stroke(); ctx.restore();
+    }
+    text('Illustrative data', px + pw - 24, py + ph - 14, font('mono', 12), C.faint, 'right');
+    ctx.restore();
+  }
+}
+
+function sceneOutro(t, t0) {
+  const lt = t - t0, k = easeOut(seg(lt, 0, .8));
+  background(t);
+  ctx.save(); ctx.globalAlpha = k;
+  const cx = W / 2;
+  drawLogo(cx, 240, 80, 40);
+  ctx.restore();
+  text('Self-hosted. Open source.', cx, 350, font('display', 40), C.text, 'center', k);
+  text('github.com/JSempereH/InSAR-Orchestrator', cx, 400, font('mono', 20), C.accent, 'center', k);
+  text('EUPL-1.2', cx, 440, font('body', 18), C.muted, 'center', k);
+}
+
+/* ---------- Chrome: caption + stepper ---------- */
+function chrome(t) {
+  const cur = STEPS.findIndex(s => { const sc = S.find(x => x.id === s.scene); return t >= sc.a && t < sc.b; });
+  if (cur < 0) return;
+  const sc = S.find(x => x.id === STEPS[cur].scene);
+  const k = easeOut(seg(t, sc.a, sc.a + .5)) * (1 - seg(t, sc.b - .35, sc.b));
+  const s = STEPS[cur];
+  text(s.n, 80, 600, font('mono', 20), C.accent, 'left', k);
+  text(s.title, 126, 606, font('display', 34), C.text, 'left', k);
+  text(s.sub, 80, 648, font('body', 20), C.muted, 'left', k);
+  // stepper
+  for (let i = 0; i < STEPS.length; i++) {
+    const x = 1220 - (STEPS.length - 1 - i) * 36, on = i === cur, done = i < cur;
+    ctx.beginPath(); ctx.arc(x, 612, on ? 7 : 5, 0, 7);
+    ctx.fillStyle = on || done ? C.accent : 'rgba(255,255,255,0.18)';
+    if (on) { ctx.shadowColor = C.accent; ctx.shadowBlur = 14; }
+    ctx.fill(); ctx.shadowBlur = 0;
+  }
+  // brand
+  ctx.save(); ctx.globalAlpha = .9;
+  drawLogo(75, 53, 30);
+  ctx.restore();
+  text('InSAR Orchestrator', 102, 59, font('display', 17), C.text);
+}
+
+window.draw = function (t) {
+  t = clamp(t, 0, DURATION - 0.001);
+  background(t);
+  const cur = S.find(s => t >= s.a && t < s.b);
+  const fn = { title: sceneTitle, aoi: sceneAOI, search: sceneSearch, pairs: scenePairs, process: sceneProcess, mintpy: sceneMintpy, outro: sceneOutro }[cur.id];
+  // soft cross-fade between consecutive scenes
+  const fadeIn = seg(t, cur.a, cur.a + .35), fadeOut = 1 - seg(t, cur.b - .35, cur.b);
+  ctx.save();
+  if (cur.id !== 'title' && cur.id !== 'outro') ctx.globalAlpha = Math.min(fadeIn, fadeOut);
+  fn(t, cur.a);
+  ctx.restore();
+  if (cur.id !== 'title' && cur.id !== 'outro') chrome(t);
+};
+window.DURATION = DURATION;
+// Canvas text does not trigger web-font loading by itself: request each face explicitly.
+window.fontsReady = Promise.all([
+  '600 20px Sora', '700 20px Sora', '500 20px Figtree', '400 20px Figtree', '400 20px "JetBrains Mono"', '500 20px "JetBrains Mono"',
+].map(f => document.fonts.load(f))).then(() => document.fonts.ready);
+
+// Preview loop when opened directly in a browser
+if (!location.search.includes('render')) {
+  window.fontsReady.then(() => {
+    const t0 = performance.now();
+    const loop = () => { window.draw(((performance.now() - t0) / 1000) % DURATION); requestAnimationFrame(loop); };
+    loop();
+  });
+}
+</script>
+</body>
+</html>

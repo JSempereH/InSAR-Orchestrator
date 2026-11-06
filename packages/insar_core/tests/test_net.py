@@ -91,7 +91,7 @@ def test_stream_download_does_not_retry_client_errors(tmp_path):
 
     try:
         stream_download("https://example.com/f", dest, session=requester, max_retries=3)
-        assert False, "expected HTTPError to propagate"
+        raise AssertionError("expected HTTPError to propagate")
     except requests.exceptions.HTTPError:
         pass
 
@@ -110,7 +110,7 @@ def test_stream_download_gives_up_after_max_retries(tmp_path, monkeypatch):
     requester = AlwaysFlakyRequester([])
     try:
         stream_download("https://example.com/f", dest, session=requester, max_retries=2)
-        assert False, "expected Timeout to propagate after exhausting retries"
+        raise AssertionError("expected Timeout to propagate after exhausting retries")
     except requests.exceptions.Timeout:
         pass
 
@@ -175,7 +175,7 @@ def test_request_with_retry_does_not_retry_4xx(monkeypatch):
     )
     try:
         request_with_retry("POST", "https://example.com/x", max_retries=3)
-        assert False, "expected HTTPError to propagate"
+        raise AssertionError("expected HTTPError to propagate")
     except requests.exceptions.HTTPError:
         pass
 
@@ -197,3 +197,35 @@ def test_stream_download_restarts_when_server_ignores_range(tmp_path, monkeypatc
 
     # Old partial content must not have been kept/appended to.
     assert dest.read_bytes() == b"abcdefgh"
+
+
+def test_stream_download_restarts_when_part_file_is_already_complete(tmp_path, monkeypatch):
+    """A leftover .part as long as the remote file makes the server answer
+    416 to the Range request; that must restart from zero, not fail."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    dest = tmp_path / "file.tif"
+    dest.with_name(dest.name + ".part").write_bytes(b"abcdefgh")
+    requester = FakeRequester([
+        FakeResponse(status_code=416),
+        FakeResponse(status_code=200, headers={"content-length": "8"}, chunks=[b"abcdefgh"]),
+    ])
+
+    stream_download("https://example.com/f", dest, session=requester)
+
+    assert dest.read_bytes() == b"abcdefgh"
+    assert "Range" in requester.calls[0]["headers"]
+    assert "Range" not in requester.calls[1]["headers"]
+
+
+def test_stream_download_retries_rate_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    dest = tmp_path / "file.tif"
+    requester = FakeRequester([
+        FakeResponse(status_code=429),
+        FakeResponse(status_code=200, headers={"content-length": "4"}, chunks=[b"abcd"]),
+    ])
+
+    stream_download("https://example.com/f", dest, session=requester)
+
+    assert dest.read_bytes() == b"abcd"
+    assert len(requester.calls) == 2

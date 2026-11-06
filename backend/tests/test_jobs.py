@@ -209,3 +209,72 @@ def test_list_jobs_reports_is_downloading_from_download_state(client, monkeypatc
         assert jobs[0]["is_downloading"] is True
     finally:
         download_state.clear(job_id)
+
+
+# ---------- refresh (incremental update) ----------
+
+def test_refresh_dry_run_changes_nothing(client, monkeypatch):
+    project = _create_project(client)
+    fake = FakeOrchestrator(plan=BatchPlan(total_pairs=3, scene_count=5, pairs_preview=[]))
+    monkeypatch.setattr(jobs_router, "_get_orchestrator", lambda db: fake)
+
+    resp = client.post(f"/api/projects/{project['id']}/refresh", json={"date_end": "2023-09-01"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_pairs"] == 3
+    assert body["date_end"] == "2023-09-01"
+    assert body["batch"] is None
+    assert client.get(f"/api/projects/{project['id']}").json()["date_end"] == "2023-06-01"
+    assert client.get(f"/api/projects/{project['id']}/batches").json() == []
+
+
+def test_refresh_never_moves_date_end_back(client, monkeypatch):
+    project = _create_project(client)
+    monkeypatch.setattr(jobs_router, "_get_orchestrator", lambda db: FakeOrchestrator())
+
+    resp = client.post(f"/api/projects/{project['id']}/refresh", json={"date_end": "2023-01-15"})
+    assert resp.json()["date_end"] == "2023-06-01"
+
+
+def test_refresh_submits_only_new_pairs_and_flags_the_batch(client, monkeypatch):
+    project = _create_project(client)
+    fake = FakeOrchestrator(pairs=[(_scene("S1_03", day=25), _scene("S1_04", day=30))])
+    monkeypatch.setattr(jobs_router, "_get_orchestrator", lambda db: fake)
+    monkeypatch.setattr("app.services.hyp3_service.get_hyp3_adapter", lambda db: FakeHyp3Adapter())
+
+    db = SessionLocal()
+    try:
+        old = Batch(project_id=project["id"], label="first", total_pairs=1, status="done")
+        db.add(old)
+        db.commit()
+        db.add(Job(batch_id=old.id, reference_granule="S1_01", secondary_granule="S1_02", status=JobStatus.SUCCEEDED))
+        db.commit()
+    finally:
+        db.close()
+
+    resp = client.post(
+        f"/api/projects/{project['id']}/refresh",
+        json={"dry_run": False, "date_end": "2023-09-01"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total_pairs"] == 1
+    assert body["batch"]["auto_download"] is True
+    assert body["batch"]["run_mintpy_when_done"] is True
+    assert ("S1_01", "S1_02") in fake.build_pairs_calls[0]
+    assert client.get(f"/api/projects/{project['id']}").json()["date_end"] == "2023-09-01"
+    _wait_for_jobs(client, project["id"], body["batch"]["id"], count=1)
+
+
+def test_refresh_with_nothing_new_creates_no_batch(client, monkeypatch):
+    project = _create_project(client)
+    monkeypatch.setattr(jobs_router, "_get_orchestrator", lambda db: FakeOrchestrator(pairs=[]))
+
+    resp = client.post(f"/api/projects/{project['id']}/refresh", json={"dry_run": False})
+    assert resp.status_code == 200
+    assert resp.json()["batch"] is None
+    assert client.get(f"/api/projects/{project['id']}/batches").json() == []
+
+
+def test_refresh_unknown_project_returns_404(client):
+    assert client.post("/api/projects/nope/refresh", json={}).status_code == 404
