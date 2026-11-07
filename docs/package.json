@@ -2,8 +2,9 @@
   "name": "insar-orchestrator-docs",
   "private": true,
   "type": "module",
-  "description": "Tooling that generates the screenshots and the animation of the docs",
+  "description": "Builds the docs site and generates the screenshots and the animation",
   "dependencies": {
+    "marked": "12.0.2",
     "playwright-core": "~1.49.1"
   }
 }

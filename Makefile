@@ -9,7 +9,7 @@ DOCS_PORT     ?= 8001
 
 .PHONY: help install backend frontend dev \
         test-backend test-insar-core test-all \
-        docs docs-assets docs-serve docs-install \
+        docs docs-assets docs-site docs-serve docs-install \
         lint docker-build docker-up docker-down backup-db clean
 
 help: ## Show this help
@@ -55,12 +55,15 @@ docs-install: docs/node_modules ## Install the tooling that generates the docs a
 docs-assets: docs/node_modules ## Regenerate screenshots, figures and the animation (ONLY=screenshots,figures,animation to pick)
 	node docs/build.mjs $(if $(ONLY),--only=$(ONLY))
 
-docs-serve: ## Preview the docs locally: README, guides and every generated asset
-	@echo "Docs preview: http://localhost:$(DOCS_PORT)/docs/preview/   (Ctrl+C to stop)"
-	@(sleep 1; xdg-open http://localhost:$(DOCS_PORT)/docs/preview/ >/dev/null 2>&1 || true) &
-	python3 -m http.server $(DOCS_PORT) --bind 127.0.0.1
+docs-site: docs/node_modules ## Build the docs site into docs/_site (the same one GitHub Pages publishes)
+	node docs/site.mjs
 
-docs: docs-assets docs-serve ## Regenerate every docs asset, then preview the docs locally
+docs-serve: docs-site ## Preview the docs site locally
+	@echo "Docs site: http://localhost:$(DOCS_PORT)/   (Ctrl+C to stop)"
+	@(sleep 1; xdg-open http://localhost:$(DOCS_PORT)/ >/dev/null 2>&1 || true) &
+	python3 -m http.server $(DOCS_PORT) --directory docs/_site --bind 127.0.0.1
+
+docs: docs-assets docs-serve ## Regenerate every docs asset, then preview the docs site locally
 
 ## --- Lint -----------------------------------------------------------------
 
@@ -73,8 +76,8 @@ lint: ## Run ruff and eslint
 docker-build: ## Build the container image
 	docker compose build
 
-docker-up: ## Run the app in a container (http://localhost:8000)
-	docker compose up -d
+docker-up: ## Build and run the app in a container (http://localhost:8000)
+	docker compose up -d --build
 
 docker-down: ## Stop and remove the container
 	docker compose down

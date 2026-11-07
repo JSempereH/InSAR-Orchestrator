@@ -61,3 +61,4 @@ backups/
 
 # Everything the container stores (database, downloads, keys); see compose.yaml
 data/
+docs/_site/
