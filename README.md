@@ -3,13 +3,13 @@
 [![CI](https://github.com/JSempereH/InSAR-Orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/JSempereH/InSAR-Orchestrator/actions/workflows/ci.yml)
 [![License: EUPL-1.2](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](LICENSE)
 
-A self-hosted, end-to-end InSAR processing platform for Sentinel-1 data. Instead of navigating ASF, HyP3, or ESGM dashboards separately, this tool centralises everything: draw an area on a map, discover available satellite tracks, submit interferometric pairs to HyP3 for cloud processing, monitor jobs in real time, and prepare results for MintPy SBAS analysis, all from a single web UI. You can also pick a point on the map and pull up its displacement time series, either from a downloaded EGMS (Copernicus Ground Motion Service) product or from a finished MintPy SBAS run.
+A self-hosted, end-to-end InSAR processing platform for Sentinel-1 data. Instead of navigating ASF, HyP3, or EGMS dashboards separately, this tool centralises everything: draw an area on a map, discover available satellite tracks, submit interferometric pairs to HyP3 for cloud processing, monitor jobs in real time, and prepare results for MintPy SBAS analysis, all from a single web UI. You can also pick a point on the map and pull up its displacement time series, either from a downloaded EGMS (Copernicus Ground Motion Service) product or from a finished MintPy SBAS run.
 
 This tool is designed with research in mind. This is **not** a production tool, no warranty guaranteed.
 
 [![The pipeline, step by step](docs/images/pipeline.gif)](docs/images/pipeline.mp4)
 
-**New here? Read the [Guide](docs/guide.md).**
+ New here? Start with the [Quick start](https://jsempereh.github.io/InSAR-Orchestrator/quick-start.html).
 
 
 ---
@@ -17,17 +17,20 @@ This tool is designed with research in mind. This is **not** a production tool, 
 ## Architecture
 
 ```
-insar-orchestrator/
+InSAR-Orchestrator/
 ├── packages/insar_core/   # Core Python library (pip-installable)
 │   ├── adapters/          # ASF scene/track search, HyP3 job submission, EGMS product search
+│   ├── analysis/          # Time series pattern analysis (trend, change point, outliers)
 │   ├── models/            # Pure dataclasses: SARScene, AOI, Job, EGMS search params
-│   ├── pipeline/          # SBAS pair builder, orchestrator, MintPy adapter + time series reader
+│   ├── pipeline/          # SBAS pair builder, orchestrator, MintPy adapter + time series reader, provenance record
 │   ├── credentials.py     # Earthdata / EGMS credential resolution (explicit -> env vars -> ~/.netrc)
 │   └── net.py             # Shared HTTP download helper (retry with backoff, resume via Range)
 ├── backend/               # FastAPI REST API + WebSocket
 │   └── app/
-│       ├── routers/       # projects, batches, jobs, scenes, slc, egms, mintpy, storage, credentials
-│       └── services/      # ASF/HyP3/EGMS integration, background download queues, polling, encryption
+│       ├── routers/       # projects, batches, jobs, scenes, slc, egms, mintpy, storage, archive, backup, credentials
+│       ├── services/      # ASF/HyP3/EGMS integration, download queues, polling, restart recovery, rclone backup and archive, provenance, encryption
+│       ├── auth.py        # Optional APP_PASSWORD login
+│       └── backup.py      # Command line backup (python -m app.backup)
 └── frontend/              # React 18 + Vite SPA
     └── src/
         ├── components/    # AOI/downloads maps (MapLibre), job monitor, SLC panel, project wizard
@@ -46,19 +49,19 @@ HyP3, monitor jobs, run MintPy SBAS on the results.
 | Python | ≥ 3.11 | For backend + core library |
 | Node.js | ≥ 18 | For frontend |
 | MintPy | ≥ 1.6.3 | Only needed for local SBAS analysis. It is found on `PATH` or in `backend/.venv` (`uv pip install --python backend/.venv mintpy`) |
-| NASA Earthdata account | — | Free at [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov/users/new) |
+| NASA Earthdata account | n/a | Free at [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov/users/new) |
 
 ---
 
 ## Setup
 
-### Quick start
+### Quick install
 
-Requires [`uv`](https://docs.astral.sh/uv/getting-started/installation/) and Node.js ≥ 18 to be installed. Then:
+The [Quick start](https://jsempereh.github.io/InSAR-Orchestrator/quick-start.html) in the docs walks through the whole first run. In short, it requires [`uv`](https://docs.astral.sh/uv/getting-started/installation/) and Node.js ≥ 18 to be installed. Then:
 
 ```bash
-git clone <repo-url> insar-orchestrator
-cd insar-orchestrator
+git clone https://github.com/JSempereH/InSAR-Orchestrator.git
+cd InSAR-Orchestrator
 ./setup.sh   # creates backend/.venv, installs backend + insar_core + frontend deps, prepares backend/.env
 ./dev.sh     # runs backend (:8000) and frontend (:5173) together, Ctrl+C stops both
 ```
@@ -68,8 +71,8 @@ That's it, skip to [step 3](#3-configure-earthdata-credentials) below to set up 
 ### 1. Clone and install the core library
 
 ```bash
-git clone <repo-url> insar-orchestrator
-cd insar-orchestrator
+git clone https://github.com/JSempereH/InSAR-Orchestrator.git
+cd InSAR-Orchestrator
 ```
 
 The `insar_core` library must be installed in the same Python environment as the backend:
@@ -219,7 +222,7 @@ print(result["model"]["label"])                  # e.g. "Trend reversal"
 print(result["narrative"])                       # plain-language sentences
 ```
 
-What each number means, how the pattern is chosen, the limits of the method and the references are in [docs/time-series-analysis.md](docs/time-series-analysis.md).
+What each number means, how the pattern is chosen, the limits of the method and the references are in [Reading a time series](https://jsempereh.github.io/InSAR-Orchestrator/time-series-analysis.html).
 
 ## Running the frontend
 
@@ -249,21 +252,26 @@ One container image holds the web app, the API, MintPy and rclone, runs as an or
 
 ```bash
 cp .env.example .env     # set APP_PASSWORD
-docker compose up -d     # or: podman compose up -d
+docker compose up -d --build   # or: podman compose up -d --build
 ```
 
-There is also a no-container install as a systemd user service. See [docs/deploy.md](docs/deploy.md) for both, for exposing it safely (VPN or HTTPS) and for rootless setups.
+There is also a no-container install as a systemd user service. See [Deploy](https://jsempereh.github.io/InSAR-Orchestrator/deploy.html) for both, for exposing it safely (VPN or HTTPS) and for rootless setups.
 
 CI (`.github/workflows/ci.yml`) lints and tests `insar_core`, the backend,
-and the frontend build on every push/PR.
+and the frontend build on every push/PR. `.github/workflows/docs.yml` publishes the docs site.
 
 ---
 
 ## Docs
 
-New here? Start with the **[Guide](docs/guide.md)**: install, credentials, how the ASF and EGMS ways work, and how to move and back up your data. To understand the time series window, read [Reading a time series](docs/time-series-analysis.md).
+The documentation is a website: **<https://jsempereh.github.io/InSAR-Orchestrator/>**
 
-Working on the docs? The screenshots, the figure and the animation in `docs/images/` are generated: `make docs` regenerates them from the running app and previews the guides locally. See [Maintaining the docs](docs/maintaining-docs.md).
+- [Quick start](https://jsempereh.github.io/InSAR-Orchestrator/quick-start.html): install, start, first steps and common problems.
+- [Credentials](https://jsempereh.github.io/InSAR-Orchestrator/credentials.html), [Get data](https://jsempereh.github.io/InSAR-Orchestrator/get-data.html) and [Your files](https://jsempereh.github.io/InSAR-Orchestrator/backup.html) (backup and archive).
+- [Reading a time series](https://jsempereh.github.io/InSAR-Orchestrator/time-series-analysis.html): what the numbers in the viewer mean.
+- [Deploy](https://jsempereh.github.io/InSAR-Orchestrator/deploy.html): container and systemd installs.
+
+The pages are the Markdown files in [docs/](docs/). Working on them? The screenshots, the figure and the animation in `docs/images/` are generated: `make docs` regenerates them from the running app and previews the site locally. See [Maintaining the docs](docs/maintaining-docs.md).
 
 ## Using `insar_core` as a standalone library
 

@@ -17,10 +17,10 @@ Pick a way to run it:
 git clone https://github.com/JSempereH/InSAR-Orchestrator.git
 cd InSAR-Orchestrator
 cp .env.example .env     # then edit it: set APP_PASSWORD
-docker compose up -d     # or: podman compose up -d
+docker compose up -d --build   # or: podman compose up -d --build
 ```
 
-Open <http://localhost:8000> and sign in. The image is pulled from GitHub Container Registry. To build it yourself instead, run `docker compose up -d --build` (the first build takes a while: MintPy and GDAL are large).
+Open <http://localhost:8000> and sign in. The first build takes a while: MintPy and GDAL are large. Later starts reuse it.
 
 The first start creates `./data` with your database, your downloads, the key that encrypts stored credentials (`data/secret_key`) and your rclone remotes. **Copying that folder copies the whole app.**
 
@@ -69,7 +69,7 @@ Then use `remotename:path` as the destination in **Settings, Backup**. A **mount
 ### Updates
 
 ```bash
-docker compose pull && docker compose up -d
+git pull && docker compose up -d --build
 ```
 
 The database upgrades itself on start. Take a backup first if the project holds data you cannot get again.
@@ -97,6 +97,10 @@ micromamba create -y -n insar -c conda-forge python=3.11 mintpy gdal rclone
 ```
 
 The service's `PATH` already includes `~/micromamba/envs/insar/bin`. Restart the service after installing.
+
+## Atmospheric correction (CDS login)
+
+MintPy's ERA5 troposphere correction downloads weather data from the Copernicus Climate Data Store, which needs a free account. Put the login in `~/.cdsapirc` for the user that runs the app: `data/home/.cdsapirc` with the container, your home folder with the systemd service. Without it the app skips that correction and says so in the MintPy panel, instead of letting the run fail. The format is in [Credentials](credentials.md#copernicus-climate-data-store-optional-but-recommended).
 
 ## Troubleshooting
 
