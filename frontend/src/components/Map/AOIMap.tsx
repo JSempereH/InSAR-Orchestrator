@@ -207,14 +207,15 @@ export function AOIMap({ onGeometryChange, initialGeometry, height = 520 }: AOIM
           {polygon && !drawing && (
             <>
               <div style={{
-                background: "rgba(239,246,255,0.97)",
+                background: "rgba(7, 14, 11, 0.88)",
+                backdropFilter: "blur(6px)",
                 padding: "5px 10px",
                 borderRadius: "var(--radius)",
                 fontSize: 12,
-                color: "var(--primary-text)",
-                fontWeight: 500,
-                border: "1px solid var(--primary-border)",
-                boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+                color: "var(--accent)",
+                fontWeight: 600,
+                border: "1px solid rgba(var(--accent-rgb), 0.5)",
+                boxShadow: "0 1px 6px rgba(0,0,0,0.4)",
               }}>
                 ✓ AOI defined
               </div>

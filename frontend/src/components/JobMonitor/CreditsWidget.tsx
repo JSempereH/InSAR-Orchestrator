@@ -29,7 +29,7 @@ export function CreditsWidget() {
       title={data.error ? `Last refresh failed: ${data.error}` : undefined}
     >
       <span style={{ color: "var(--text)", fontWeight: 600 }}>
-        {data.credits !== null ? `${data.credits.toFixed(1)} HyP3 credits` : "HyP3 credits: —"}
+        {data.credits !== null ? `${data.credits.toFixed(1)} HyP3 credits` : "HyP3 credits: n/a"}
       </span>
       {low && (
         <span style={{ color: "var(--danger)", fontWeight: 600 }} title="Running low on HyP3 processing credits">

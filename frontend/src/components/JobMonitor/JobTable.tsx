@@ -460,28 +460,41 @@ const JobRow = memo(function JobRow({
 });
 
 function InlineProgressBar({ progress }: { progress: DownloadProgress }) {
-  const pct = progress.pct ?? 0;
+  const pct = Math.min(100, Math.max(0, progress.pct ?? 0));
+  const speed = progress.speed_bps ? `${(progress.speed_bps / 1e6).toFixed(1)} MB/s` : null;
+  const eta = progress.eta_s != null && progress.eta_s > 0
+    ? progress.eta_s >= 60 ? `${Math.round(progress.eta_s / 60)} min left` : `${progress.eta_s}s left`
+    : null;
+  // The percentage sits beside the bar, in readable type on the dark background,
+  // instead of squeezed inside a thin bright fill where it could not be read.
   return (
-    <div style={{
-      height: 14, background: "rgba(0,0,0,0.1)", borderRadius: 7, overflow: "hidden",
-      border: "1px solid rgba(61,255,154,0.2)",
-    }}>
-      <div style={{
-        height: "100%", width: `${pct}%`, borderRadius: 7, transition: "width 0.3s ease",
-        background: [
-          "linear-gradient(180deg, rgba(255,255,255,0.28) 0%, rgba(255,255,255,0) 55%)",
-          "linear-gradient(90deg, var(--accent-2), var(--accent))",
-        ].join(", "),
-        boxShadow: "0 0 6px rgba(61,255,154,0.4)",
-        display: "flex", alignItems: "center", justifyContent: "flex-end",
-        paddingRight: pct > 12 ? 5 : 0,
-      }}>
-        {pct > 8 && (
-          <span style={{ fontSize: 9, fontWeight: 700, color: "rgba(255,255,255,0.9)" }}>
-            {pct.toFixed(0)}%
-          </span>
-        )}
+    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(pct)}
+        style={{
+          flex: 1, height: 8, background: "rgba(255,255,255,0.07)", borderRadius: 4, overflow: "hidden",
+        }}
+      >
+        <div style={{
+          height: "100%", width: `${pct}%`, borderRadius: 4, transition: "width 0.3s ease",
+          background: "linear-gradient(90deg, var(--accent-2), var(--accent))",
+          boxShadow: "0 0 8px rgba(61,255,154,0.5)",
+        }} />
       </div>
+      <span style={{
+        fontFamily: "var(--font-mono)", fontSize: 12, fontWeight: 600, color: "var(--accent)",
+        minWidth: 40, textAlign: "right",
+      }}>
+        {pct.toFixed(0)}%
+      </span>
+      {(speed || eta) && (
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)", minWidth: 150 }}>
+          {[speed, eta].filter(Boolean).join(" · ")}
+        </span>
+      )}
     </div>
   );
 }

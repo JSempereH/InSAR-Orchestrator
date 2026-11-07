@@ -109,7 +109,49 @@ export interface Batch {
   status: "submitting" | "done";
   auto_download: boolean;
   run_mintpy_when_done: boolean;
+  parameters?: BatchParameters | null;
   created_at: string;
+}
+
+export interface BatchParameters {
+  processor: string;
+  hyp3: Record<string, string | boolean>;
+  pairing: { method: string; max_temporal_neighbors: number };
+  search: { track_number?: number | null; flight_direction?: string | null; date_start?: string | null; date_end?: string | null };
+  software: Record<string, string | null>;
+  app_version: string;
+}
+
+export interface MintPyRunRecord {
+  mintpy_run: {
+    status: string | null; started_at: string | null; finished_at: string | null;
+    return_code: number | null; attempt: number | null; error: string | null;
+    warnings?: string[];
+  };
+  results?: {
+    timeseries: string | null;
+    velocity: string | null;
+    reference?: { row: number; column: number; date: string | null; lat: number | null; lon: number | null } | null;
+  };
+  software: Record<string, string | null>;
+  mintpy: { custom_config: string; options: Record<string, string> | null };
+  crop: { applied: boolean; subset_lalo: string | null; margin_fraction: number; min_margin_deg: number };
+  interferograms: { count: number; names: string[] };
+  written_at: string;
+}
+
+export interface Provenance {
+  schema: number;
+  generated_at: string;
+  app_version: string;
+  archived: boolean;
+  project: Record<string, unknown>;
+  batches: {
+    id: string; label: string | null; created_at: string | null; total_pairs: number;
+    status: string; auto_download: boolean; parameters: BatchParameters | null;
+  }[];
+  pairs: Record<string, unknown>[];
+  last_mintpy_run: MintPyRunRecord | null;
 }
 
 export interface ProjectRefresh {
@@ -321,6 +363,7 @@ export const projectsApi = {
     api.patch<Project>(`/api/projects/${id}`, data).then((r) => r.data),
   refresh: (id: string, body: { dry_run: boolean; date_end?: string; run_mintpy?: boolean }) =>
     api.post<ProjectRefresh>(`/api/projects/${id}/refresh`, body).then((r) => r.data),
+  provenance: (id: string) => api.get<Provenance>(`/api/projects/${id}/provenance`).then((r) => r.data),
   archive: (id: string, destination?: string) =>
     api.post<ArchiveState>(`/api/projects/${id}/archive`, { destination: destination || null }).then((r) => r.data),
   restore: (id: string) => api.post<ArchiveState>(`/api/projects/${id}/restore`).then((r) => r.data),
@@ -416,7 +459,7 @@ export interface DiskUsage {
 }
 
 export interface MintPyStatus {
-  status: "NOT_STARTED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED";
+  status: "NOT_STARTED" | "RUNNING" | "SUCCEEDED" | "FAILED" | "CANCELLED" | "INTERRUPTED";
   started_at?: string | null;
   finished_at?: string | null;
   return_code?: number | null;
@@ -424,6 +467,7 @@ export interface MintPyStatus {
   work_dir?: string;
   log_tail?: string;
   disk_usage?: DiskUsage | null;
+  warnings?: string[];
 }
 
 export const mintpyApi = {
