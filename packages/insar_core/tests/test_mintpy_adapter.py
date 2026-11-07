@@ -8,6 +8,7 @@ from rasterio.transform import Affine
 
 from insar_core.pipeline.mintpy_adapter import (
     MintPyAdapter,
+    cds_credentials_available,
     _extract_and_crop,
     _is_metadata_sidecar,
     _native_crop_window,
@@ -342,3 +343,143 @@ def test_unzip_all_leaves_no_partial_directory_after_failure(tmp_path):
     assert not (downloads_dir / scene).exists()
     assert not any(p.name.startswith(".") for p in downloads_dir.iterdir())
     assert (downloads_dir / f"{scene}.zip").exists()
+
+
+def test_write_config_appends_extra_options_after_the_defaults(tmp_path):
+    adapter = MintPyAdapter(downloads_dir=tmp_path, work_dir=tmp_path / "w")
+    config = adapter.write_config(extra_options={"mintpy.troposphericDelay.method": "no"}).read_text()
+    assert "mintpy.load.processor      = hyp3" in config
+    assert "mintpy.troposphericDelay.method = no" in config
+    assert config.index("mintpy.load.processor") < config.index("mintpy.troposphericDelay.method")
+
+
+def test_write_config_without_extra_options_is_unchanged(tmp_path):
+    adapter = MintPyAdapter(downloads_dir=tmp_path, work_dir=tmp_path / "w")
+    assert "troposphericDelay" not in adapter.write_config().read_text()
+
+
+def test_cds_credentials_are_detected_from_the_rc_file(tmp_path, monkeypatch):
+    for name in ("CDSAPI_KEY", "CDSAPI_RC", "CDSAPI_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert cds_credentials_available() is False
+
+    (tmp_path / ".cdsapirc").write_text("")
+    assert cds_credentials_available() is False          # an empty file is not a login
+
+    (tmp_path / ".cdsapirc").write_text("url: https://example.invalid/api\nkey: x\n")
+    assert cds_credentials_available() is True
+
+
+def test_cds_credentials_are_detected_from_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CDSAPI_RC", raising=False)
+    monkeypatch.setenv("CDSAPI_KEY", "something")
+    assert cds_credentials_available() is True
+
+
+def test_cds_rc_file_location_can_be_overridden(tmp_path, monkeypatch):
+    monkeypatch.delenv("CDSAPI_KEY", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    rc = tmp_path / "elsewhere"
+    rc.write_text("key: x")
+    monkeypatch.setenv("CDSAPI_RC", str(rc))
+    assert cds_credentials_available() is True
+
+
+# ── reference pixel ──────────────────────────────────────────────────────────
+
+def _reference_workspace(tmp_path, monkeypatch, coherence, mask=None, ref=(0, 3)):
+    """A MintPy work dir with the files pin_reference_point reads, and a stand-in
+    reference_point.py that writes REF_Y/REF_X the way MintPy does."""
+    import sys
+
+    import h5py
+    import numpy as np
+
+    from insar_core.pipeline import mintpy_adapter
+
+    work = tmp_path / "mintpy"
+    (work / "inputs").mkdir(parents=True)
+    coherence = np.asarray(coherence, dtype="float32")
+    with h5py.File(work / "inputs" / "ifgramStack.h5", "w") as f:
+        f.attrs["REF_Y"], f.attrs["REF_X"] = str(ref[0]), str(ref[1])
+    with h5py.File(work / "avgSpatialCoh.h5", "w") as f:
+        f.create_dataset("coherence", data=coherence)
+    with h5py.File(work / "maskConnComp.h5", "w") as f:
+        f.create_dataset("mask", data=np.ones(coherence.shape, dtype=bool) if mask is None else mask)
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "smallbaselineApp.py").write_text("")
+    script = bin_dir / "reference_point.py"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import sys, h5py\n"
+        "a = sys.argv\n"
+        "with h5py.File(a[1], 'r+') as f:\n"
+        "    f.attrs['REF_Y'], f.attrs['REF_X'] = a[a.index('-y') + 1], a[a.index('-x') + 1]\n"
+    )
+    script.chmod(0o755)
+    monkeypatch.setattr(mintpy_adapter, "find_smallbaseline", lambda: str(bin_dir / "smallbaselineApp.py"))
+    return mintpy_adapter.MintPyAdapter(downloads_dir=tmp_path, work_dir=work), work / "inputs" / "ifgramStack.h5"
+
+
+def _reference_of(stack):
+    import h5py
+
+    with h5py.File(stack, "r") as f:
+        return int(f.attrs["REF_Y"]), int(f.attrs["REF_X"])
+
+
+def test_a_reference_pixel_on_the_edge_moves_to_the_most_coherent_interior_pixel(tmp_path, monkeypatch):
+    import numpy as np
+
+    coherence = np.full((6, 6), 0.8)
+    coherence[0, 3] = 1.0           # MintPy's pick: best raw value but on the border
+    coherence[2:5, 2:5] = 0.95      # a coherent block
+    coherence[3, 3] = 0.97
+    adapter, stack = _reference_workspace(tmp_path, monkeypatch, coherence)
+
+    assert adapter.pin_reference_point() == {"previous": (0, 3), "chosen": (3, 3)}
+    assert _reference_of(stack) == (3, 3)
+
+
+def test_the_choice_is_the_same_every_time(tmp_path, monkeypatch):
+    import numpy as np
+
+    coherence = np.full((6, 6), 0.9)
+    adapter, stack = _reference_workspace(tmp_path, monkeypatch, coherence, ref=(4, 4))
+    first = adapter.pin_reference_point()
+    assert first is not None
+    assert adapter.pin_reference_point() is None      # already there: nothing to change
+    assert _reference_of(stack) == first["chosen"]
+
+
+def test_a_single_lucky_pixel_does_not_win_over_a_coherent_area(tmp_path, monkeypatch):
+    import numpy as np
+
+    coherence = np.full((8, 8), 0.6)
+    coherence[1, 1] = 0.99                     # isolated
+    coherence[4:7, 4:7] = 0.9                  # solid block
+    adapter, stack = _reference_workspace(tmp_path, monkeypatch, coherence, ref=(0, 0))
+
+    assert adapter.pin_reference_point()["chosen"] == (5, 5)
+
+
+def test_pixels_outside_the_mask_are_never_chosen(tmp_path, monkeypatch):
+    import numpy as np
+
+    coherence = np.full((6, 6), 0.9)
+    mask = np.ones((6, 6), dtype=bool)
+    mask[1:5, 1:5] = False
+    mask[4, 4] = True                          # the only valid interior pixel (a lone one)
+    adapter, stack = _reference_workspace(tmp_path, monkeypatch, coherence, mask=mask, ref=(0, 0))
+
+    assert adapter.pin_reference_point()["chosen"] == (4, 4)
+
+
+def test_nothing_changes_when_mintpy_has_not_produced_its_files(tmp_path):
+    from insar_core.pipeline.mintpy_adapter import MintPyAdapter
+
+    assert MintPyAdapter(downloads_dir=tmp_path, work_dir=tmp_path / "mintpy").pin_reference_point() is None

@@ -35,14 +35,52 @@ _METERS_TO_MM = 1000.0
 _MAX_POINTS = 50_000
 
 
+def _series_behind_velocity(velocity_file: Path) -> Optional[Path]:
+    """The time series file a velocity map was computed from, if it is still here.
+
+    MintPy records it in the velocity file's `FILE_PATH` attribute. Only the file
+    name is used: the folder in that attribute is wherever the run happened, which
+    is not where the project is now after a move, a restore or a copy.
+    """
+    try:
+        with h5py.File(velocity_file, "r") as f:
+            recorded = f.attrs.get("FILE_PATH")
+    except OSError:
+        return None
+    if isinstance(recorded, bytes):
+        recorded = recorded.decode("utf-8", errors="replace")
+    if not recorded:
+        return None
+    name = Path(str(recorded)).name
+    if not name.startswith(("timeseries", "geo_timeseries")):
+        return None
+    candidate = velocity_file.parent / name
+    return candidate if candidate.is_file() else None
+
+
 def locate_timeseries_file(work_dir: Path) -> Path:
     """Find the smallbaselineApp.py output holding the final time series.
+
+    "Final" means the series the velocity map was computed from: smallbaselineApp
+    writes the raw inversion to `timeseries.h5` and, as each correction runs,
+    further files (`timeseries_ERA5.h5`, `timeseries_ERA5_demErr.h5`, ...). Reading
+    plain `timeseries.h5` would show a series without the atmospheric and DEM-error
+    corrections next to a velocity map that has them (on a real Madrid run the two
+    differ by up to 8 mm). So the file named in the velocity map's FILE_PATH wins,
+    and the plain candidates are only the fallback when no velocity map exists yet.
 
     Raises FileNotFoundError if none of the candidate paths exist yet, which
     happens while a run is still in progress or if it failed before reaching
     the relevant step.
     """
     work_dir = Path(work_dir)
+    for velocity_candidate in _VELOCITY_CANDIDATE_PATHS:
+        velocity_file = work_dir / velocity_candidate
+        if velocity_file.exists():
+            behind = _series_behind_velocity(velocity_file)
+            if behind is not None:
+                return behind
+            break
     for candidate in _CANDIDATE_PATHS:
         path = work_dir / candidate
         if path.exists():
@@ -102,6 +140,31 @@ def _read_geocoding(f: h5py.File) -> dict:
         "length": int(f.attrs["LENGTH"]),
         "epsg": int(f.attrs["EPSG"]) if "EPSG" in f.attrs else _WGS84,
     }
+
+
+def read_reference_point(velocity_file: Path) -> Optional[dict]:
+    """Where MintPy anchored the result: the pixel every displacement is relative to.
+
+    Every MintPy value is relative to this pixel and to a reference date, so a
+    result cannot be compared with another source without knowing them. Returns
+    None when the file does not record one. `lat`/`lon` are WGS84."""
+    with h5py.File(velocity_file, "r") as f:
+        attrs = f.attrs
+        if "REF_Y" not in attrs or "REF_X" not in attrs:
+            return None
+        out: dict = {"row": int(attrs["REF_Y"]), "column": int(attrs["REF_X"])}
+        raw_date = str(attrs.get("REF_DATE", ""))
+        out["date"] = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}" if len(raw_date) == 8 else None
+        try:
+            geo = _read_geocoding(f)
+            to_wgs = _to_wgs84(geo["epsg"])
+            x = geo["x_first"] + (out["column"] + 0.5) * geo["x_step"]
+            y = geo["y_first"] + (out["row"] + 0.5) * geo["y_step"]
+            lon, lat = to_wgs.transform(x, y) if to_wgs else (x, y)
+            out["lat"], out["lon"] = round(float(lat), 6), round(float(lon), 6)
+        except (ValueError, KeyError):
+            out["lat"] = out["lon"] = None
+        return out
 
 
 def _to_wgs84(epsg: int) -> Optional[pyproj.Transformer]:

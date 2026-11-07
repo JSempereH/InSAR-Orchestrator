@@ -6,6 +6,7 @@ from insar_core.pipeline.mintpy_timeseries import (
     locate_timeseries_file,
     locate_velocity_file,
     read_point_time_series,
+    read_reference_point,
     read_velocity_points,
 )
 
@@ -200,3 +201,82 @@ def test_read_point_time_series_reprojects_utm_query_point(tmp_path):
     # not the file's native UTM coordinates.
     series = read_point_time_series(tmp_path, lat=_UTM_ORIGIN_LAT, lon=_UTM_ORIGIN_LON)
     assert series["values_mm"] == pytest.approx([0.0, 1.0, 2.0])
+
+
+# ── which series is "final" ──────────────────────────────────────────────────
+
+def _series_with_value(path, value_m, *, geocoded=True):
+    _write_timeseries_h5(path, geocoded=geocoded)
+    with h5py.File(path, "r+") as f:
+        f["timeseries"][...] = value_m
+
+
+def _velocity_from(path, source_name):
+    _write_velocity_h5(path)
+    with h5py.File(path, "r+") as f:
+        f.attrs["FILE_PATH"] = f"/some/other/machine/mintpy/{source_name}"
+
+
+def test_the_series_the_velocity_was_computed_from_wins_over_the_raw_inversion(tmp_path):
+    _series_with_value(tmp_path / "timeseries.h5", 0.001)
+    _series_with_value(tmp_path / "timeseries_ERA5_demErr.h5", 0.002)
+    _velocity_from(tmp_path / "velocity.h5", "timeseries_ERA5_demErr.h5")
+
+    assert locate_timeseries_file(tmp_path) == tmp_path / "timeseries_ERA5_demErr.h5"
+
+
+def test_only_the_file_name_of_the_recorded_path_is_used(tmp_path):
+    # The run happened elsewhere (another machine, before a move or a restore).
+    _series_with_value(tmp_path / "timeseries_ERA5.h5", 0.002)
+    _velocity_from(tmp_path / "velocity.h5", "timeseries_ERA5.h5")
+    assert locate_timeseries_file(tmp_path) == tmp_path / "timeseries_ERA5.h5"
+
+
+def test_falls_back_to_the_raw_series_when_the_recorded_file_is_gone(tmp_path):
+    _series_with_value(tmp_path / "timeseries.h5", 0.001)
+    _velocity_from(tmp_path / "velocity.h5", "timeseries_ERA5_demErr.h5")   # not on disk
+    assert locate_timeseries_file(tmp_path) == tmp_path / "timeseries.h5"
+
+
+def test_a_velocity_file_without_a_recorded_source_changes_nothing(tmp_path):
+    _series_with_value(tmp_path / "timeseries.h5", 0.001)
+    _write_velocity_h5(tmp_path / "velocity.h5")
+    assert locate_timeseries_file(tmp_path) == tmp_path / "timeseries.h5"
+
+
+def test_a_recorded_source_that_is_not_a_time_series_is_ignored(tmp_path):
+    _series_with_value(tmp_path / "timeseries.h5", 0.001)
+    _write_velocity_h5(tmp_path / "other.h5")
+    _velocity_from(tmp_path / "velocity.h5", "other.h5")
+    assert locate_timeseries_file(tmp_path) == tmp_path / "timeseries.h5"
+
+
+def test_point_series_come_from_the_corrected_file(tmp_path):
+    _series_with_value(tmp_path / "timeseries.h5", 0.001)
+    _series_with_value(tmp_path / "timeseries_ERA5_demErr.h5", 0.002)
+    _velocity_from(tmp_path / "velocity.h5", "timeseries_ERA5_demErr.h5")
+
+    result = read_point_time_series(tmp_path, 49.99, 10.01)
+    assert result["values_mm"] == pytest.approx([2.0, 2.0, 2.0])   # not the raw 1.0
+
+
+def test_read_reference_point_gives_pixel_date_and_wgs84(tmp_path):
+    # Values taken from a real Madrid run: pixel (50, 71) of an 80 m UTM 30N grid.
+    path = tmp_path / "velocity.h5"
+    with h5py.File(path, "w") as f:
+        for key, value in {"X_FIRST": 437720.0, "Y_FIRST": 4476840.0, "X_STEP": 80.0, "Y_STEP": -80.0,
+                           "WIDTH": 83, "LENGTH": 73, "EPSG": 32630, "REF_Y": 50, "REF_X": 71,
+                           "REF_DATE": "20260117"}.items():
+            f.attrs[key] = value
+        f.create_dataset("velocity", data=np.zeros((73, 83), dtype="float32"))
+    ref = read_reference_point(path)
+    assert (ref["row"], ref["column"], ref["date"]) == (50, 71, "2026-01-17")
+    assert ref["lat"] == pytest.approx(40.4, abs=0.05)
+    assert ref["lon"] == pytest.approx(-3.7, abs=0.05)
+
+
+def test_read_reference_point_is_none_when_not_recorded(tmp_path):
+    path = tmp_path / "velocity.h5"
+    with h5py.File(path, "w") as f:
+        f.create_dataset("velocity", data=np.zeros((2, 2), dtype="float32"))
+    assert read_reference_point(path) is None
