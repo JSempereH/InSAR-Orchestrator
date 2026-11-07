@@ -124,6 +124,13 @@ class Batch(Base):
     # When true, jobs are queued for download automatically as soon as they
     # succeed (checked by the polling loop). Can be toggled while a batch runs.
     auto_download = Column(Boolean, default=False, nullable=False)
+    # Pairs this batch still has to submit, as [[reference, secondary], ...]. Kept
+    # while status is "submitting" so a restart can resume instead of losing them;
+    # cleared once the batch is done.
+    pending_pairs = Column(JSON, nullable=True)
+    # How the batch was produced (HyP3 parameters, pairing rule, search window,
+    # software versions). Recorded at submission, for reproducibility.
+    parameters = Column(JSON, nullable=True)
     # When true, the polling loop starts a MintPy run for the project once every
     # job in this batch has finished and every succeeded one is downloaded.
     run_mintpy_when_done = Column(Boolean, default=False, nullable=False)

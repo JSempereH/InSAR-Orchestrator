@@ -62,6 +62,12 @@ def _migrate_schema() -> None:
         if "auto_download" not in batch_cols:
             conn.execute(text("ALTER TABLE batches ADD COLUMN auto_download BOOLEAN DEFAULT 0 NOT NULL"))
             conn.commit()
+        if "pending_pairs" not in batch_cols:
+            conn.execute(text("ALTER TABLE batches ADD COLUMN pending_pairs JSON"))
+            conn.commit()
+        if "parameters" not in batch_cols:
+            conn.execute(text("ALTER TABLE batches ADD COLUMN parameters JSON"))
+            conn.commit()
         if "run_mintpy_when_done" not in batch_cols:
             conn.execute(text("ALTER TABLE batches ADD COLUMN run_mintpy_when_done BOOLEAN DEFAULT 0 NOT NULL"))
             conn.commit()
@@ -119,11 +125,23 @@ app.include_router(archive.router)
 app.include_router(auth.router)
 
 
+async def _recover_after_restart() -> None:
+    """Resume what the previous run left half done, without delaying startup."""
+    from app.services import recovery
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(None, recovery.recover_on_startup)
+    except Exception:
+        logger.exception("Startup recovery failed")
+
+
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(poll_active_jobs())
     asyncio.create_task(credits_service.poll_credits())
     asyncio.create_task(backup_service.backup_scheduler())
+    if settings.recover_on_startup:
+        asyncio.create_task(_recover_after_restart())
 
 
 @app.get("/api/health")

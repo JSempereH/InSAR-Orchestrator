@@ -11,7 +11,7 @@ from app.models import Batch, Job, JobStatus, Project
 from app.schemas import (
     BatchOut, BatchPlanOut, JobOut, ProjectRefreshOut, ProjectRefreshRequest, SubmitBatchRequest,
 )
-from app.services import archive_service, batch_submission, download_state
+from app.services import archive_service, batch_submission, download_state, provenance_service
 from app.services import asf_service
 from app.services.hyp3_service import get_hyp3_adapter
 from insar_core.models.scene import AOI, SearchParams
@@ -155,6 +155,7 @@ def submit_batch(
     return _start_batch(
         db, project, pairs,
         label=body.label, auto_download=body.auto_download,
+        max_temporal_neighbors=body.max_temporal_neighbors,
     )
 
 
@@ -164,6 +165,7 @@ def _start_batch(
     pairs: list,
     label: Optional[str],
     auto_download: bool,
+    max_temporal_neighbors: int,
     run_mintpy_when_done: bool = False,
 ) -> Batch:
     """Create the batch row and hand the pairs to the background submitter.
@@ -172,6 +174,8 @@ def _start_batch(
     visible in the UI immediately. Submission to HyP3 (one HTTP call per pair)
     runs in the background and fills in Job rows as it goes; see
     batch_submission."""
+    granule_pairs = [(ref.granule_name, sec.granule_name) for ref, sec in pairs]
+    parameters = provenance_service.batch_parameters(project, max_temporal_neighbors)
     batch = Batch(
         project_id=project.id,
         label=label or f"Batch {len(project.batches) + 1}",
@@ -179,12 +183,17 @@ def _start_batch(
         status="submitting",
         auto_download=auto_download,
         run_mintpy_when_done=run_mintpy_when_done,
+        # Saved before submitting, so a restart can resume the batch (see recovery.py).
+        pending_pairs=[list(p) for p in granule_pairs],
+        parameters=parameters,
     )
     db.add(batch)
     db.commit()
     db.refresh(batch)
 
-    batch_submission.start(batch.id, pairs, job_name=f"insar-{project.name[:20]}")
+    batch_submission.start(
+        batch.id, granule_pairs, job_name=batch_submission.job_name_for(project.name), parameters=parameters,
+    )
     return batch
 
 
@@ -239,6 +248,7 @@ def refresh_project(
         db, project, pairs,
         label=f"Update {date.today().isoformat()}",
         auto_download=True,
+        max_temporal_neighbors=neighbors,
         run_mintpy_when_done=body.run_mintpy,
     )
     return ProjectRefreshOut(

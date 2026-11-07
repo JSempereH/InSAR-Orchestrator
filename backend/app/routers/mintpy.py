@@ -20,7 +20,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import Project
 from app.schemas import TimeSeriesOut
-from app.services import archive_service, mintpy_service
+from app.services import archive_service, mintpy_service, provenance_service
 from app.services.json_response import json_response
 
 router = APIRouter(prefix="/api/projects", tags=["mintpy"])
@@ -45,7 +45,10 @@ def run_mintpy(project_id: str, db: Session = Depends(get_db)):
     if not downloads_dir.exists():
         raise HTTPException(422, f"Storage destination does not exist: {downloads_dir}")
     try:
-        return mintpy_service.start_run(project_id, downloads_dir, geometry=project.geometry)
+        return mintpy_service.start_run(
+            project_id, downloads_dir, geometry=project.geometry,
+            context=provenance_service.project_context(db, project),
+        )
     except RuntimeError as exc:
         raise HTTPException(422, str(exc)) from exc
 

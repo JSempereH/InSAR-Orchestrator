@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app import models, schemas
-from app.services import archive_service, storage_move, storage_service
+from app.services import archive_service, mintpy_service, provenance_service, storage_move, storage_service
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -85,6 +85,16 @@ def update_project(project_id: str, body: schemas.ProjectUpdate, db: Session = D
     db.commit()
     db.refresh(project)
     return project
+
+
+@router.get("/{project_id}/provenance")
+def project_provenance(project_id: str, db: Session = Depends(get_db)):
+    """How this project's results were produced: the parameters of every batch, each
+    pair, and the last MintPy run's options, crop and software versions."""
+    project = db.query(models.Project).filter(models.Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return provenance_service.get_provenance(db, project)
 
 
 @router.delete("/{project_id}")
@@ -183,8 +193,9 @@ def move_project_storage(project_id: str, body: schemas.MoveRequest, db: Session
 
 @router.delete("/{project_id}/download-data")
 def delete_project_download_data(project_id: str, db: Session = Depends(get_db)):
-    """Delete the downloaded HyP3 output files for this project - the local
-    file cache only. Leaves the slc/ subfolder (delete those separately, via
+    """Delete the downloaded HyP3 output files for this project, together with
+    the MintPy results and provenance.json built from them (everything in the
+    project folder). Leaves the slc/ subfolder (delete those separately, via
     the SLC download endpoint) and the Batch/Job processing history intact;
     just marks each Job as not-downloaded so it can be re-fetched from HyP3
     later without resubmitting."""
@@ -195,6 +206,10 @@ def delete_project_download_data(project_id: str, db: Session = Depends(get_db))
 
     freed_bytes = 0
     storage_path = Path(project.storage_path) if project.storage_path else None
+    try:
+        mintpy_service.forget_project(project_id, storage_path)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
     if storage_path and storage_path.exists():
         # One dir_size_bytes() (which shells out to `du`) for the whole tree
         # and, if present, one more for slc/ to subtract - not one per

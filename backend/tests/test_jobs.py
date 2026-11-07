@@ -54,9 +54,11 @@ class FakeOrchestrator:
 class FakeHyp3Adapter:
     def __init__(self):
         self.submitted: list[tuple[str, str]] = []
+        self.parameters: list[dict] = []
 
     def submit_pair(self, reference, secondary, name="insar-job", **kwargs):
         self.submitted.append((reference, secondary))
+        self.parameters.append(kwargs)
         return SubmittedJob(
             hyp3_job_id=f"job-{reference}-{secondary}",
             reference_granule=reference,
@@ -278,3 +280,40 @@ def test_refresh_with_nothing_new_creates_no_batch(client, monkeypatch):
 
 def test_refresh_unknown_project_returns_404(client):
     assert client.post("/api/projects/nope/refresh", json={}).status_code == 404
+
+
+def _wait_until_done(client, project_id, batch_id, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        batch = next(b for b in client.get(f"/api/projects/{project_id}/batches").json() if b["id"] == batch_id)
+        if batch["status"] == "done":
+            return batch
+        time.sleep(0.05)
+    raise AssertionError("batch never finished submitting")
+
+
+def test_a_batch_records_how_it_was_produced_and_clears_its_pending_pairs(client, monkeypatch):
+    project = _create_project(client)
+    adapter = FakeHyp3Adapter()
+    pairs = [(_scene("S1_01"), _scene("S1_02", day=13))]
+    monkeypatch.setattr(jobs_router, "_get_orchestrator", lambda db: FakeOrchestrator(pairs=pairs))
+    monkeypatch.setattr("app.services.hyp3_service.get_hyp3_adapter", lambda db: adapter)
+
+    created = client.post(
+        f"/api/projects/{project['id']}/batches", json={"dry_run": False, "max_temporal_neighbors": 2},
+    ).json()
+    done = _wait_until_done(client, project["id"], created["id"])
+
+    parameters = done["parameters"]
+    assert parameters["processor"] == "HyP3 INSAR_GAMMA"
+    assert parameters["hyp3"]["looks"] == "20x4"
+    assert parameters["pairing"] == {"method": "temporal_neighbors", "max_temporal_neighbors": 2}
+    assert parameters["search"]["date_start"] == "2023-01-01"
+    assert parameters["software"]["python"]
+    assert adapter.parameters[0]["looks"] == "20x4"   # what was recorded is what was submitted
+
+    db = SessionLocal()
+    try:
+        assert db.query(Batch).filter_by(id=created["id"]).first().pending_pairs is None
+    finally:
+        db.close()
