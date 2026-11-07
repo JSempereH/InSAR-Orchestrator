@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -50,11 +51,43 @@ def find_smallbaseline() -> Optional[str]:
     return str(candidate) if candidate.exists() else None
 
 
-def _mintpy_env() -> dict:
+_CDS_SHIM_DIR = Path(__file__).parent / "cds_shim"
+_ERA5_CHECK_SECONDS = 300
+_era5_checked: dict = {"at": None, "source": None}
+
+
+def era5_source() -> Optional[str]:
+    """Where MintPy's ERA5 weather files can come from on this machine.
+
+    "arco" is the public ARCO-ERA5 archive (no account, no queue; see era5_arco.py),
+    "cds" is the Copernicus Climate Data Store with a login found (slow: its queue can
+    hold one request for hours), None means neither works. The answer is kept for a few
+    minutes so a run's several MintPy launches do not each probe the network."""
+    now = time.monotonic()
+    if _era5_checked["at"] is not None and now - _era5_checked["at"] < _ERA5_CHECK_SECONDS:
+        return _era5_checked["source"]
+    from insar_core.pipeline import era5_arco
+
+    if era5_arco.archive_reachable():
+        source = "arco"
+    elif cds_credentials_available():
+        source = "cds"
+    else:
+        source = None
+    _era5_checked.update(at=now, source=source)
+    return source
+
+
+def _mintpy_env(era5_source: Optional[str] = None) -> dict:
     """Environment for MintPy subprocesses, with the interpreter's own bin
-    directory first on PATH so the scripts MintPy itself launches resolve."""
+    directory first on PATH so the scripts MintPy itself launches resolve.
+
+    With era5_source == "arco" the `cdsapi` stand-in goes first on PYTHONPATH, so PyAPS's
+    weather requests are answered from ARCO-ERA5 instead of the CDS queue."""
     env = dict(os.environ)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    if era5_source == "arco":
+        env["PYTHONPATH"] = str(_CDS_SHIM_DIR) + os.pathsep + env.get("PYTHONPATH", "")
     return env
 
 
@@ -298,6 +331,8 @@ class MintPyAdapter:
     def __init__(self, downloads_dir: Path, work_dir: Path):
         self.downloads_dir = Path(downloads_dir)
         self.work_dir = Path(work_dir)
+        # Where the ERA5 weather files come from ("arco", "cds" or None); see era5_source().
+        self.era5_source: Optional[str] = None
 
     def unzip_all(self, geometry: Optional[dict] = None) -> int:
         """Decompress the interferogram files MintPy actually needs (see
@@ -457,7 +492,7 @@ class MintPyAdapter:
             "--work-dir", str(self.work_dir),
             "--dostep", "load_data",
         ]
-        return subprocess.run(cmd, check=False, env=_mintpy_env())
+        return subprocess.run(cmd, check=False, env=_mintpy_env(self.era5_source))
 
     def run_full_pipeline(self, config_path: Optional[Path] = None) -> subprocess.CompletedProcess:
         """Run the full MintPy SBAS pipeline (all steps), blocking until done."""
@@ -469,7 +504,7 @@ class MintPyAdapter:
             str(config_path),
             "--work-dir", str(self.work_dir),
         ]
-        return subprocess.run(cmd, check=False, env=_mintpy_env())
+        return subprocess.run(cmd, check=False, env=_mintpy_env(self.era5_source))
 
     def start_full_pipeline(
         self,
@@ -505,7 +540,7 @@ class MintPyAdapter:
         if end_step:
             cmd += ["--end", end_step]
         log_handle = log_path.open("a" if start_step else "w", encoding="utf-8")
-        return subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=_mintpy_env())
+        return subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=_mintpy_env(self.era5_source))
 
     def pin_reference_point(self, candidates: int = 5) -> Optional[dict]:
         """Replace MintPy's reference pixel with a deterministic one, away from the edge.
@@ -542,7 +577,7 @@ class MintPyAdapter:
         score = _smoothed_coherence(np.where(valid, coherence, 0.0))
         score[[0, -1], :] = -1.0
         score[:, [0, -1]] = -1.0
-        order = np.argsort(score, axis=None, kind="stable")[::-1][:candidates]
+        order = np.argsort(-score, axis=None, kind="stable")[:candidates]   # ties: first in row order
         reference_point = Path(find_smallbaseline() or _SMALLBASELINE).with_name("reference_point.py")
         for flat in order:
             row, column = (int(i) for i in np.unravel_index(flat, score.shape))

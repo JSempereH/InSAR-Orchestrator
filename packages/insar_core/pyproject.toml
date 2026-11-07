@@ -13,6 +13,10 @@ dependencies = [
     "numpy>=1.24",
     "pyproj>=3.5",
     "rasterio>=1.4",
+    # ERA5 weather data for the troposphere correction (see pipeline/era5_arco.py).
+    "zarr>=3.1",
+    "fsspec>=2024.6",
+    "aiohttp>=3.9",
 ]
 
 [build-system]
