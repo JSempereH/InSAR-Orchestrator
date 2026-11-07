@@ -20,6 +20,18 @@ from insar_core.net import stream_download
 _DOWNLOAD_CONCURRENCY = 4
 
 
+# What a pair is processed with unless a caller overrides it. Public so the app can
+# record exactly these values next to the results (reproducibility): whatever is
+# submitted is `{**DEFAULT_INSAR_PARAMETERS, **overrides}`.
+DEFAULT_INSAR_PARAMETERS: dict = {
+    "include_dem": True,
+    "include_inc_map": True,
+    "include_look_vectors": True,
+    "include_displacement_maps": True,
+    "looks": "20x4",
+}
+
+
 def _sdk_job_to_submitted(job) -> SubmittedJob:
     status_map = {
         "PENDING": JobStatus.PENDING,
@@ -70,25 +82,26 @@ class HyP3Adapter(ProcessorAdapter):
         reference: str,
         secondary: str,
         name: str = "insar-job",
-        include_dem: bool = True,
-        include_inc_map: bool = True,
-        include_look_vectors: bool = True,
-        include_displacement_maps: bool = True,
-        looks: str = "20x4",
-        **kwargs,
+        **parameters,
     ) -> SubmittedJob:
+        """Submit one INSAR_GAMMA job. `parameters` override DEFAULT_INSAR_PARAMETERS."""
         batch = self._client.submit_insar_job(
             reference,
             secondary,
             name=name,
-            include_dem=include_dem,
-            include_inc_map=include_inc_map,
-            include_look_vectors=include_look_vectors,
-            include_displacement_maps=include_displacement_maps,
-            looks=looks,
+            **{**DEFAULT_INSAR_PARAMETERS, **parameters},
         )
         jobs = list(batch)
         return _sdk_job_to_submitted(jobs[0])
+
+    def find_jobs_by_name(self, name: str) -> List["SubmittedJob"]:
+        """Every job submitted under `name`, whatever its status.
+
+        Used to recognise pairs that HyP3 accepted but the app never got to record
+        (for example the backend stopped between the two), so they are adopted
+        instead of submitted a second time, which would spend credits twice.
+        """
+        return [_sdk_job_to_submitted(job) for job in self._client.find_jobs(name=name)]
 
     def get_status(self, job_id: str) -> SubmittedJob:
         job = self._client.get_job_by_id(job_id)
