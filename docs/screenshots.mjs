@@ -8,6 +8,8 @@
 //   Downloads             -> docs/images/downloads-panel.png
 //   Viewer, MintPy        -> docs/images/viewer-mintpy.png   (needs a finished MintPy run)
 //   Viewer, EGMS          -> docs/images/viewer-egms.png     (needs an L2A/L2B download)
+//   Settings              -> docs/images/settings-credentials.png, settings-backup.png
+//   Processing details    -> docs/images/processing-details.png (needs a finished MintPy run)
 //
 // A screenshot whose data is missing is skipped with a warning.
 import { chromium } from 'playwright-core';
@@ -165,6 +167,50 @@ export async function captureScreenshots() {
       await page.close();
       done.push('viewer-egms.png');
     } else skipped.push('viewer-egms.png (no L2A/L2B EGMS download)');
+
+    // 5. Settings: credentials and backup. The fields are empty on a fresh page, nothing private is shown.
+    {
+      const page = await fresh(browser, 1500);
+      // Show the card as it looks on a machine that has rclone, whatever this one has.
+      await page.route('**/api/backup', async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.rclone = { available: true, version: 'v1.68.0', remotes: ['s3backup', 'nas'] };
+        await route.fulfill({ response, json: body });
+      });
+      await page.getByRole('button', { name: 'Settings' }).click();
+      await page.getByText('NASA Earthdata').first().waitFor();
+      await page.waitForTimeout(1200);
+      const cards = page.locator('.page .card');
+      const first = await cards.nth(0).boundingBox();
+      const second = await cards.nth(1).boundingBox();
+      await page.screenshot({
+        path: join(OUT, 'settings-credentials.png'),
+        clip: { x: first.x - 8, y: first.y - 8, width: first.width + 16, height: second.y + second.height - first.y + 16 },
+      });
+      done.push('settings-credentials.png');
+      const backup = page.locator('.card', { has: page.getByRole('heading', { name: 'Backup', exact: true }) }).first();
+      await backup.scrollIntoViewIfNeeded();
+      await backup.screenshot({ path: join(OUT, 'settings-backup.png') });
+      done.push('settings-backup.png');
+      await page.close();
+    }
+
+    // 6. Processing details of the project with a finished MintPy run
+    if (found.mintpy) {
+      const page = await fresh(browser, 1400);
+      await page.getByText(found.mintpy.name).first().click();
+      await page.waitForTimeout(2500);
+      const toggle = page.getByRole('button', { name: /Processing details/ });
+      await toggle.scrollIntoViewIfNeeded();
+      await toggle.click();
+      await page.getByText('Last MintPy run').waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(800);
+      const box = toggle.locator('xpath=..');
+      await box.screenshot({ path: join(OUT, 'processing-details.png') });
+      done.push('processing-details.png');
+      await page.close();
+    } else skipped.push('processing-details.png (no project with a finished MintPy run)');
   } finally {
     await browser.close();
   }
