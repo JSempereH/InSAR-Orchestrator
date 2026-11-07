@@ -12,7 +12,7 @@ type Row =
 
 export function DownloadsPage({ onOpenViewer }: { onOpenViewer: (datasetId: string) => void }) {
   const qc = useQueryClient();
-  const { ask, confirm } = useDialogs();
+  const { ask, confirm, toast } = useDialogs();
   const [movingRowId, setMovingRowId] = useState<string | null>(null);
   const [moveTarget, setMoveTarget] = useState<string>("");
   const [archivingRowId, setArchivingRowId] = useState<string | null>(null);
@@ -99,7 +99,9 @@ export function DownloadsPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
 
   const deleteProjectDataMut = useMutation({
     mutationFn: projectsApi.deleteDownloadData,
+    onError: (err) => toast({ title: "Could not delete the data", message: errorText(err), tone: "error" }),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["mintpy-status"] });
       qc.invalidateQueries({ queryKey: ["project-download-summary"] });
       qc.invalidateQueries({ queryKey: ["storage-usage"] });
     },
@@ -208,13 +210,13 @@ export function DownloadsPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
                       pending: archiveMut.isPending || restoreMut.isPending,
                       error: archiveMut.isError ? errorText(archiveMut.error) : restoreMut.isError ? errorText(restoreMut.error) : null,
                     }}
-                    deleteLabel="🗑 Delete downloaded interferograms"
-                    deleteTitle="Deletes the HyP3 output files for this project (does not touch raw SLC downloads or the batch/job history - jobs can be downloaded again only until they expire on HyP3)"
+                    deleteLabel="🗑 Delete downloaded data"
+                    deleteTitle="Deletes the HyP3 output files and the MintPy results for this project (does not touch raw SLC downloads or the batch/job history - jobs can be downloaded again only until they expire on HyP3)"
                     onDelete={async () => {
                       const ok = await confirm({
-                        title: `Delete downloaded interferograms for "${row.project.name}"?`,
+                        title: `Delete downloaded data for "${row.project.name}"?`,
                         message:
-                          `This frees about ${usage?.used_gb ?? "?"} GB but keeps the processing history.\n` +
+                          `This frees about ${usage?.used_gb ?? "?"} GB: the interferograms, the MintPy results and the processing record (provenance.json). The batch and job history stays.\n` +
                           `You can download again from HyP3 only until the results expire there. After that the pairs would have to be processed again, using credits. Raw SLC downloads are not affected.`,
                         confirmLabel: "Delete files",
                         danger: true,
@@ -504,7 +506,7 @@ function MoveBanner({ state }: { state: { pct: number; src: string | null; dst: 
 function SourceBadge({ source }: { source: "asf" | "egms" }) {
   const style = source === "asf"
     ? { background: "var(--primary-light)", color: "var(--primary-text)", border: "1px solid var(--primary-border)" }
-    : { background: "#fffbeb", color: "var(--warning)", border: "1px solid var(--warning-border)" };
+    : { background: "var(--warning-light)", color: "var(--warning)", border: "1px solid var(--warning-border)" };
   return (
     <span style={{ ...style, padding: "2px 8px", borderRadius: 9999, fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>
       {source === "asf" ? "ASF/HyP3" : "EGMS"}
