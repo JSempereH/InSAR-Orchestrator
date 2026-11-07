@@ -226,7 +226,7 @@ def _project_with_results(client, tmp_path):
     (root / "slc").mkdir()
     (root / "slc" / "keep.zip").write_bytes(b"x")
     db = SessionLocal()
-    project = models.Project(name="delete-data-project", geometry="{}", storage_path=str(root))
+    project = models.Project(name="delete-data-project", geometry={}, storage_path=str(root))
     db.add(project)
     db.commit()
     pid = project.id
