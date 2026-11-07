@@ -9,6 +9,9 @@ from pydantic_settings import BaseSettings
 from pathlib import Path
 
 
+APP_VERSION = "0.2.0"
+
+
 class Settings(BaseSettings):
     database_url: str = "sqlite:///./insar_app.db"
     downloads_dir: str = "./downloads"
@@ -28,6 +31,9 @@ class Settings(BaseSettings):
     # Folder holding the built frontend (index.html and assets). When set, the
     # backend serves the UI itself, so one port and one container is enough.
     frontend_dir: str = ""
+    # On start, resume batches whose submission was cut short, queue downloads that
+    # never ran and restart MintPy runs that were interrupted. Tests switch it off.
+    recover_on_startup: bool = True
 
     class Config:
         env_file = ".env"

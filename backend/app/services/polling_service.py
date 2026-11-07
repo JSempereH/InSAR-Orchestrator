@@ -57,7 +57,7 @@ def _launch_pending_mintpy() -> None:
     """
     from app.config import settings
     from app.models import Batch, Project
-    from app.services import mintpy_service
+    from app.services import mintpy_service, provenance_service
 
     db = SessionLocal()
     try:
@@ -82,7 +82,10 @@ def _launch_pending_mintpy() -> None:
                 continue
             downloads_dir = Path(project.storage_path) if project.storage_path else Path(settings.downloads_dir)
             try:
-                mintpy_service.start_run(project.id, downloads_dir, geometry=project.geometry)
+                mintpy_service.start_run(
+                    project.id, downloads_dir, geometry=project.geometry,
+                    context=provenance_service.project_context(db, project),
+                )
             except RuntimeError as exc:
                 if "already in progress" in str(exc):
                     continue  # try again next cycle

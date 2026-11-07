@@ -10,6 +10,7 @@ import tempfile
 _tmp_dir = tempfile.mkdtemp(prefix="insar-orchestrator-test-")
 os.environ["DATABASE_URL"] = f"sqlite:///{_tmp_dir}/test.db"
 os.environ["DOWNLOADS_DIR"] = os.path.join(_tmp_dir, "downloads")
+os.environ["RECOVER_ON_STARTUP"] = "0"   # tests call the recovery functions directly
 
 import pytest
 from fastapi.testclient import TestClient
