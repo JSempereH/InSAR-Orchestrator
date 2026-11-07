@@ -130,7 +130,7 @@ export function ProcessingDetails({ projectId }: { projectId: string }) {
                     </span>
                     <span style={muted}>
                       {options && options["mintpy.reference.yx"] === "no" && options["mintpy.reference.lalo"] === "no"
-                        ? " (picked by MintPy: the most coherent pixel)" : ""}
+                        ? " (chosen by the app: the most coherent pixel away from the edge)" : ""}
                     </span>
                   </Row>
                 )}
@@ -139,6 +139,9 @@ export function ProcessingDetails({ projectId }: { projectId: string }) {
                     <span style={mono}>{run.crop.subset_lalo} <span style={muted}>(AOI plus {Math.round(run.crop.margin_fraction * 100)}% margin)</span></span>
                   ) : "none (full scene)"}
                 </Row>
+                {run.mintpy.weather_data && (
+                  <Row label="ERA5 weather data"><span style={mono}>{run.mintpy.weather_data}</span></Row>
+                )}
                 {options ? (
                   KEY_OPTIONS.filter(([key]) => key in options).map(([key, label]) => (
                     <Row key={key} label={label}><span style={mono}>{options[key]}</span></Row>

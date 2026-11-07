@@ -451,9 +451,9 @@ def test_the_choice_is_the_same_every_time(tmp_path, monkeypatch):
     coherence = np.full((6, 6), 0.9)
     adapter, stack = _reference_workspace(tmp_path, monkeypatch, coherence, ref=(4, 4))
     first = adapter.pin_reference_point()
-    assert first is not None
-    assert adapter.pin_reference_point() is None      # already there: nothing to change
-    assert _reference_of(stack) == first["chosen"]
+    assert first == {"previous": (4, 4), "chosen": (1, 1)}   # equal scores: the first pixel in row order
+    assert adapter.pin_reference_point() is None             # already there: nothing to change
+    assert _reference_of(stack) == (1, 1)
 
 
 def test_a_single_lucky_pixel_does_not_win_over_a_coherent_area(tmp_path, monkeypatch):
