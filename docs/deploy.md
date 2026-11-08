@@ -98,9 +98,9 @@ micromamba create -y -n insar -c conda-forge python=3.11 mintpy gdal rclone
 
 The service's `PATH` already includes `~/micromamba/envs/insar/bin`. Restart the service after installing.
 
-## Atmospheric correction (CDS login)
+## Atmospheric correction (weather data)
 
-MintPy's ERA5 troposphere correction downloads weather data from the Copernicus Climate Data Store, which needs a free account. Put the login in `~/.cdsapirc` for the user that runs the app: `data/home/.cdsapirc` with the container, your home folder with the systemd service. Without it the app skips that correction and says so in the MintPy panel, instead of letting the run fail. The format is in [Credentials](credentials.md#copernicus-climate-data-store-optional-but-recommended).
+MintPy's ERA5 troposphere correction needs weather data. The app downloads it from the public ARCO-ERA5 archive, so the machine only needs internet access to `storage.googleapis.com`. No account is required. If the archive cannot be reached, a Copernicus Climate Data Store login in `~/.cdsapirc` is used instead (`data/home/.cdsapirc` with the container); without either, the app skips that correction and says so in the MintPy panel. Details in [Credentials](credentials.md#era5-weather-data-no-login-needed).
 
 ## Troubleshooting
 

@@ -63,4 +63,6 @@ Open **Processing details** under the MintPy panel.
 
 It shows the HyP3 parameters of every batch, the pairing rule, the crop, the options MintPy used (reference point, corrections, DEM error) and the software versions. *Download full record* saves everything as JSON, including every pair and its HyP3 job id.
 
+The **reference point** is chosen by the app, not left to MintPy: the most coherent pixel (averaged over 3 x 3 pixels) that is valid in every interferogram and not on the border of the area, so the same data always gives the same reference. MintPy's own automatic choice is random among the coherent pixels and can fall on the border, which breaks its tropospheric correction. A reference you set yourself in the options is kept.
+
 Every MintPy run also writes this record to `provenance.json` in the project folder, so backups and archives explain themselves. Batches submitted before this feature have no recorded parameters. Options the app does not set are MintPy's defaults for the installed version, and the record states each resolved value.
