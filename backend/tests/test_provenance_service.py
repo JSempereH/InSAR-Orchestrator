@@ -239,26 +239,43 @@ def _patch_defaults(monkeypatch, method="pyaps"):
     monkeypatch.setattr(mintpy_service, "mintpy_effective_options", effective)
 
 
-def test_without_a_login_the_era5_correction_is_turned_off_and_says_so(monkeypatch):
+def test_without_any_weather_source_the_era5_correction_is_turned_off_and_says_so(monkeypatch):
     _patch_defaults(monkeypatch)
-    monkeypatch.setattr(mintpy_service, "cds_credentials_available", lambda: False)
-    options, warnings = mintpy_service._troposphere_options()
-    assert options == {"mintpy.troposphericDelay.method": "no"}
-    assert len(warnings) == 1 and "ERA5" in warnings[0] and "cdsapirc" in warnings[0]
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: None)
+    options, warnings, source = mintpy_service._troposphere_options()
+    assert options == {"mintpy.troposphericDelay.method": "no"} and source is None
+    assert len(warnings) == 1 and "ERA5" in warnings[0] and "cdsapirc" in warnings[0] and "ARCO" in warnings[0]
 
 
-def test_with_a_login_mintpys_default_is_left_alone(monkeypatch):
+@pytest.mark.parametrize("source", ["arco", "cds"])
+def test_with_a_weather_source_mintpys_default_is_left_alone(monkeypatch, source):
     _patch_defaults(monkeypatch)
-    monkeypatch.setattr(mintpy_service, "cds_credentials_available", lambda: True)
-    assert mintpy_service._troposphere_options() == ({}, [])
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: source)
+    assert mintpy_service._troposphere_options() == ({}, [], source)
 
 
 def test_nothing_is_overridden_when_the_default_is_not_pyaps_or_unknown(monkeypatch):
-    monkeypatch.setattr(mintpy_service, "cds_credentials_available", lambda: False)
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: None)
     _patch_defaults(monkeypatch, method="gacos")
-    assert mintpy_service._troposphere_options() == ({}, [])
+    assert mintpy_service._troposphere_options() == ({}, [], None)
     _patch_defaults(monkeypatch, method=None)
-    assert mintpy_service._troposphere_options() == ({}, [])
+    assert mintpy_service._troposphere_options() == ({}, [], None)
+
+
+def test_the_weather_source_is_given_to_mintpy_and_recorded(project, monkeypatch):
+    _patch_defaults(monkeypatch)
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: "arco")
+    seen = {}
+
+    class Adapter(_fake_adapter(code=0)):
+        def start_full_pipeline(self, config_path=None, start_step=None, end_step=None):
+            seen["era5_source"] = self.era5_source
+            return super().start_full_pipeline(config_path, start_step, end_step)
+
+    record, _ = _run_inline(project, monkeypatch, Adapter)
+    assert seen["era5_source"] == "arco"
+    assert "ARCO-ERA5" in record["mintpy"]["weather_data"]
+    assert record["mintpy_run"]["warnings"] == []
 
 
 def test_a_run_without_a_login_passes_the_override_and_records_the_warning(project, monkeypatch):
@@ -285,7 +302,7 @@ def test_a_run_without_a_login_passes_the_override_and_records_the_warning(proje
             return None
 
     _patch_defaults(monkeypatch)
-    monkeypatch.setattr(mintpy_service, "cds_credentials_available", lambda: False)
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: None)
     record, _ = _run_inline(project, monkeypatch, Adapter)
 
     assert seen["extra_options"] == {"mintpy.troposphericDelay.method": "no"}
