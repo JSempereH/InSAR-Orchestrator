@@ -134,7 +134,7 @@ export interface MintPyRunRecord {
     reference?: { row: number; column: number; date: string | null; lat: number | null; lon: number | null } | null;
   };
   software: Record<string, string | null>;
-  mintpy: { custom_config: string; options: Record<string, string> | null };
+  mintpy: { custom_config: string; options: Record<string, string> | null; weather_data?: string | null };
   crop: { applied: boolean; subset_lalo: string | null; margin_fraction: number; min_margin_deg: number };
   interferograms: { count: number; names: string[] };
   written_at: string;

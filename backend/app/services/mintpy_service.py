@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from insar_core.pipeline.mintpy_adapter import MintPyAdapter, cds_credentials_available, find_smallbaseline
+from insar_core.pipeline.mintpy_adapter import MintPyAdapter, era5_source, find_smallbaseline
 from insar_core.pipeline.mintpy_timeseries import (
     locate_timeseries_file, locate_velocity_file, read_point_time_series, read_reference_point,
     read_velocity_points,
@@ -63,6 +63,8 @@ class MintPyRunState:
     # Things the person should know about how this run was configured, such as a
     # correction that had to be left out. Shown in the UI and saved in provenance.json.
     warnings: list[str] = field(default_factory=list)
+    # Where the ERA5 weather files came from: "arco", "cds" or None (no correction).
+    era5_source: Optional[str] = None
 
 
 def mintpy_available() -> bool:
@@ -332,29 +334,35 @@ def _cancel_requested(project_id: str) -> bool:
         return state is not None and state.cancel_requested
 
 
-_NO_CDS_WARNING = (
-    "The ERA5 troposphere correction was left out because no Copernicus Climate Data "
-    "Store login was found (~/.cdsapirc, or CDSAPI_KEY in the environment). MintPy "
-    "cannot download the weather data without one, and the whole run would fail late "
-    "with an unclear error. Add a free CDS account's key and run again to apply it."
+_NO_ERA5_WARNING = (
+    "The ERA5 troposphere correction was left out because no weather data source works: "
+    "the ARCO-ERA5 archive did not answer (no internet, or its packages are missing) and no "
+    "Copernicus Climate Data Store login was found (~/.cdsapirc, or CDSAPI_KEY in the "
+    "environment). MintPy would fail late with an unclear error. Run again once the "
+    "archive is reachable to apply it."
 )
+_ERA5_SOURCES = {
+    "arco": "ARCO-ERA5, the public copy of the Copernicus ERA5 reanalysis",
+    "cds": "Copernicus Climate Data Store",
+}
 
 
-def _troposphere_options() -> tuple[dict[str, str], list[str]]:
-    """Config overrides and warnings that follow from what this machine can do.
+def _troposphere_options() -> tuple[dict[str, str], list[str], Optional[str]]:
+    """Config overrides, warnings and the weather data source that follow from what this machine can do.
 
-    MintPy's default troposphere correction is PyAPS with ERA5, which needs a CDS
-    login. Without one it downloads nothing, finds no weather files and stops with
-    a division by zero (measured on a real run: it fails after the inversion, so
-    the work done so far is wasted and the message does not say why). So the
+    MintPy's default troposphere correction is PyAPS with ERA5, which downloads one
+    weather file per date. If neither source of those files works it finds none and
+    stops with a division by zero (measured on a real run: it fails after the inversion,
+    so the work done so far is wasted and the message does not say why). So the
     correction is turned off explicitly, and that is stated in the run's warnings,
     its provenance record and the status the UI shows, never silently."""
     defaults = mintpy_effective_options("")
     if not defaults or defaults.get("mintpy.troposphericDelay.method") != "pyaps":
-        return {}, []
-    if cds_credentials_available():
-        return {}, []
-    return {"mintpy.troposphericDelay.method": "no"}, [_NO_CDS_WARNING]
+        return {}, [], None
+    source = era5_source()
+    if source:
+        return {}, [], source
+    return {"mintpy.troposphericDelay.method": "no"}, [_NO_ERA5_WARNING], None
 
 
 # MintPy's quick-overview step plots how many interferogram triplets have a non-zero
@@ -417,6 +425,7 @@ def _record_run(
             "error": state.error if state else None,
             "warnings": list(state.warnings) if state else [],
         }
+        weather_source = state.era5_source if state else None
     custom = parse_mintpy_options(custom_text)
     names = _interferogram_names(downloads_dir)
     record = {
@@ -427,6 +436,8 @@ def _record_run(
             "custom_config": custom_text,
             # Everything not in custom_config comes from MintPy's own defaults.
             "options": mintpy_effective_options(custom_text),
+            # Where the ERA5 weather data of the troposphere correction came from, if it ran.
+            "weather_data": _ERA5_SOURCES.get(weather_source),
         },
         "crop": {
             "applied": bool(geometry_used and custom.get("mintpy.subset.lalo")),
@@ -481,9 +492,11 @@ def _run(
         adapter.unzip_all(geometry=geometry)
         if _cancel_requested(project_id):
             return
-        extra_options, warnings = _troposphere_options()
+        extra_options, warnings, weather_source = _troposphere_options()
+        adapter.era5_source = weather_source
         with _lock:
             _runs[project_id].warnings = warnings
+            _runs[project_id].era5_source = weather_source
         if warnings:
             logger.warning("MintPy for project %s: %s", project_id, warnings[0])
         config_path = adapter.write_config(geometry=geometry, extra_options=extra_options)
