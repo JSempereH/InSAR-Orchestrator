@@ -181,3 +181,21 @@ def test_the_answer_is_kept_for_a_few_minutes(fresh_choice, monkeypatch):
     assert mintpy_adapter.era5_source() == "arco"
     assert mintpy_adapter.era5_source() == "arco"
     assert len(calls) == 1
+
+
+# ── the archive is published in either zarr format ──────────────────────────
+
+class _Answer:
+    def __init__(self, code):
+        self.status_code = code
+
+
+@pytest.mark.parametrize("present, expected", [
+    ({"zarr.json"}, True),          # zarr v3 layout
+    ({".zmetadata"}, True),         # zarr v2 layout, as the store was serving in November 2026
+    (set(), False),
+])
+def test_the_archive_is_found_in_either_zarr_format(monkeypatch, present, expected):
+    requests = pytest.importorskip("requests")
+    monkeypatch.setattr(requests, "get", lambda url, timeout: _Answer(200 if url.rsplit("/", 1)[1] in present else 404))
+    assert era5_arco.archive_reachable() is expected

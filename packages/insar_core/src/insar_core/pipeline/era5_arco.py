@@ -151,7 +151,12 @@ def archive_reachable(timeout: float = 5.0) -> bool:
         import requests
         import zarr  # noqa: F401
 
-        return requests.get(f"{ARCHIVE_URL}/zarr.json", timeout=timeout).status_code == 200
+        # The store has been published in both zarr formats under this name: v3 keeps
+        # `zarr.json` at the root, v2 keeps `.zmetadata`. Either one means it is there.
+        return any(
+            requests.get(f"{ARCHIVE_URL}/{name}", timeout=timeout).status_code == 200
+            for name in ("zarr.json", ".zmetadata")
+        )
     except Exception:
         return False
 
