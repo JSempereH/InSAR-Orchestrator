@@ -1,6 +1,7 @@
 ![InSAR Orchestrator](docs/images/banner.svg)
 
 [![CI](https://github.com/JSempereH/InSAR-Orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/JSempereH/InSAR-Orchestrator/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-online-3dff9a?labelColor=04110a)](https://jsempereh.github.io/InSAR-Orchestrator/)
 [![License: EUPL-1.2](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](LICENSE)
 
 A self-hosted, end-to-end InSAR processing platform for Sentinel-1 data. Instead of navigating ASF, HyP3, or EGMS dashboards separately, this tool centralises everything: draw an area on a map, discover available satellite tracks, submit interferometric pairs to HyP3 for cloud processing, monitor jobs in real time, and prepare results for MintPy SBAS analysis, all from a single web UI. You can also pick a point on the map and pull up its displacement time series, either from a downloaded EGMS (Copernicus Ground Motion Service) product or from a finished MintPy SBAS run.
