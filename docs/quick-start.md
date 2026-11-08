@@ -42,4 +42,4 @@ Open **Settings** and enter what you will use. See [Credentials](credentials.md)
 - **"smallbaselineApp.py was not found"**: MintPy is not installed (step 2).
 - **The Viewer says "No MintPy results yet"**: run MintPy first, from the project's page in **ASF**.
 - **The map stays on "Loading map…"**: the map background comes from the internet. Check your connection and reload.
-- **The MintPy panel shows a yellow warning about ERA5**: add a Copernicus Climate login, see [Credentials](credentials.md#copernicus-climate-data-store-optional-but-recommended).
+- **The MintPy panel shows a yellow warning about ERA5**: the weather data could not be fetched (no internet access to the public archive, and no Copernicus login as fallback). Run again once online, see [Credentials](credentials.md#era5-weather-data-no-login-needed).
