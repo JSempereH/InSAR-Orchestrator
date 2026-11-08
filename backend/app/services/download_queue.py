@@ -108,6 +108,10 @@ def _download_one(item: dict) -> None:
         download_state.update(job_id, status="running", pct=pct, **kw)
 
     files = adapter.download(hyp3_job_id, destination, progress_cb=on_progress)
+    if not files:
+        # HyP3 lists no files once a job's results have expired. Recording that as a
+        # download would hide that the data is gone.
+        raise RuntimeError(f"HyP3 returned no files for job {hyp3_job_id}; its results may have expired")
 
     db2 = SessionLocal()
     try:

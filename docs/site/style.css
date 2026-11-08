@@ -1,15 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>InSAR Orchestrator docs preview</title>
-<link rel="icon" type="image/svg+xml" href="/frontend/public/favicon.svg">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-<style>
 /* Local preview of the docs, served by `make docs`. Same black and green tokens as the app (frontend/src/index.css). */
 :root {
   --bg: #07090a; --surface: #0e1211; --text: #eef2f0; --muted: #8a9490; --faint: #5d6663;
@@ -58,63 +46,11 @@ main { max-width: 900px; margin: 0 auto; padding: 32px clamp(16px, 4vw, 40px) 80
 .md li { margin: 4px 0; }
 .md li::marker { color: var(--accent); }
 .notice { padding: 12px 16px; border-radius: 12px; border: 1px solid rgba(255,93,108,0.35); background: rgba(255,93,108,0.08); color: var(--danger); }
-</style>
-</head>
-<body>
-<header class="top">
-  <div class="brand"><img src="/frontend/public/logo.svg" alt="">InSAR Orchestrator <small>docs</small></div>
-  <nav id="nav" aria-label="Documents"></nav>
-</header>
-<main id="main"></main>
 
-<script>
-const DOCS = [
-  { id: "guide", title: "Guide", path: "/docs/guide.md" },
-  { id: "series", title: "Reading a time series", path: "/docs/time-series-analysis.md" },
-];
-const nav = document.getElementById("nav");
-const main = document.getElementById("main");
-
-nav.innerHTML = DOCS.map((d) => `<a href="#${d.id}" data-id="${d.id}">${d.title}</a>`).join("");
-
-// Relative links and images are written for GitHub, where they resolve against the Markdown file's own folder.
-function resolveRelative(root, mdUrl) {
-  const fix = (el, attr) => {
-    const value = el.getAttribute(attr);
-    if (!value || /^(https?:|#|data:|mailto:)/.test(value)) return;
-    el.setAttribute(attr, new URL(value, mdUrl).pathname + new URL(value, mdUrl).hash);
-  };
-  root.querySelectorAll("img[src], video[src], source[src]").forEach((el) => fix(el, "src"));
-  root.querySelectorAll("a[href]").forEach((el) => {
-    fix(el, "href");
-    const target = new URL(el.getAttribute("href"), location.origin);
-    const doc = DOCS.find((d) => d.path === target.pathname);
-    if (doc) el.setAttribute("href", `#${doc.id}`); // links between the docs stay inside the preview
-  });
-}
-
-async function showMarkdown(doc) {
-  try {
-    const res = await fetch(doc.path, { cache: "no-store" });
-    if (!res.ok) throw new Error(`${doc.path} answered ${res.status}`);
-    const html = marked.parse(await res.text(), { gfm: true });
-    main.innerHTML = `<article class="md">${html}</article>`;
-    resolveRelative(main, new URL(doc.path, location.origin));
-  } catch (err) {
-    main.innerHTML = `<div class="notice">Could not render ${doc.path}: ${err.message}</div>`;
-  }
-}
-
-function route() {
-  const id = location.hash.slice(1) || "guide";
-  const doc = DOCS.find((d) => d.id === id) || DOCS[0];
-  nav.querySelectorAll("a").forEach((a) => (a.getAttribute("data-id") === doc.id ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current")));
-  document.title = `${doc.title} · InSAR Orchestrator docs`;
-  window.scrollTo(0, 0);
-  showMarkdown(doc);
-}
-window.addEventListener("hashchange", route);
-route();
-</script>
-</body>
-</html>
+/* Site additions */
+.md h1, .md h2, .md h3, .md h4 { scroll-margin-top: 84px; }
+.md h1 a.anchor, .md h2 a.anchor, .md h3 a.anchor { color: inherit; border: 0; }
+nav .spacer { flex: 1; }
+header.top .brand { color: inherit; text-decoration: none; }
+.footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--faint); font-size: 13px; }
+.footer a { color: var(--muted); }

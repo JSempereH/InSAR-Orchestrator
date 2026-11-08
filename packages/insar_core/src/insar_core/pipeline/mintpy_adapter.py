@@ -6,16 +6,36 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
+import h5py
+import numpy as np
 import pyproj
 import rasterio
 from rasterio.windows import Window
 
 _SMALLBASELINE = "smallbaselineApp.py"
+
+
+def cds_credentials_available() -> bool:
+    """Whether a Copernicus Climate Data Store login is configured for this process.
+
+    MintPy's ERA5 troposphere correction (PyAPS) downloads weather data through the
+    CDS API, which reads `~/.cdsapirc` (or the file named by CDSAPI_RC) or the
+    CDSAPI_URL and CDSAPI_KEY variables. Only the presence is checked here: the
+    contents are never read or logged.
+    """
+    if os.environ.get("CDSAPI_KEY"):
+        return True
+    rc_file = Path(os.environ.get("CDSAPI_RC") or Path.home() / ".cdsapirc")
+    try:
+        return rc_file.is_file() and rc_file.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def find_smallbaseline() -> Optional[str]:
@@ -31,11 +51,43 @@ def find_smallbaseline() -> Optional[str]:
     return str(candidate) if candidate.exists() else None
 
 
-def _mintpy_env() -> dict:
+_CDS_SHIM_DIR = Path(__file__).parent / "cds_shim"
+_ERA5_CHECK_SECONDS = 300
+_era5_checked: dict = {"at": None, "source": None}
+
+
+def era5_source() -> Optional[str]:
+    """Where MintPy's ERA5 weather files can come from on this machine.
+
+    "arco" is the public ARCO-ERA5 archive (no account, no queue; see era5_arco.py),
+    "cds" is the Copernicus Climate Data Store with a login found (slow: its queue can
+    hold one request for hours), None means neither works. The answer is kept for a few
+    minutes so a run's several MintPy launches do not each probe the network."""
+    now = time.monotonic()
+    if _era5_checked["at"] is not None and now - _era5_checked["at"] < _ERA5_CHECK_SECONDS:
+        return _era5_checked["source"]
+    from insar_core.pipeline import era5_arco
+
+    if era5_arco.archive_reachable():
+        source = "arco"
+    elif cds_credentials_available():
+        source = "cds"
+    else:
+        source = None
+    _era5_checked.update(at=now, source=source)
+    return source
+
+
+def _mintpy_env(era5_source: Optional[str] = None) -> dict:
     """Environment for MintPy subprocesses, with the interpreter's own bin
-    directory first on PATH so the scripts MintPy itself launches resolve."""
+    directory first on PATH so the scripts MintPy itself launches resolve.
+
+    With era5_source == "arco" the `cdsapi` stand-in goes first on PYTHONPATH, so PyAPS's
+    weather requests are answered from ARCO-ERA5 instead of the CDS queue."""
     env = dict(os.environ)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
+    if era5_source == "arco":
+        env["PYTHONPATH"] = str(_CDS_SHIM_DIR) + os.pathsep + env.get("PYTHONPATH", "")
     return env
 
 
@@ -279,6 +331,8 @@ class MintPyAdapter:
     def __init__(self, downloads_dir: Path, work_dir: Path):
         self.downloads_dir = Path(downloads_dir)
         self.work_dir = Path(work_dir)
+        # Where the ERA5 weather files come from ("arco", "cds" or None); see era5_source().
+        self.era5_source: Optional[str] = None
 
     def unzip_all(self, geometry: Optional[dict] = None) -> int:
         """Decompress the interferogram files MintPy actually needs (see
@@ -382,10 +436,18 @@ class MintPyAdapter:
         if bbox is not None:
             zip_path.unlink()
 
-    def write_config(self, config_path: Optional[Path] = None, geometry: Optional[dict] = None) -> Path:
+    def write_config(
+        self,
+        config_path: Optional[Path] = None,
+        geometry: Optional[dict] = None,
+        extra_options: Optional[dict[str, str]] = None,
+    ) -> Path:
         """Generate a smallbaselineApp.cfg for HyP3 data layout.
 
         Uses glob patterns that match HyP3's one-interferogram-per-subdirectory layout.
+
+        `extra_options` adds or overrides `mintpy.*` options (for example turning a
+        correction off); they are written after the defaults of this method.
 
         `geometry`, when given (the project's own drawn AOI, as GeoJSON),
         restricts processing to a padded bounding box around it instead of
@@ -413,6 +475,9 @@ class MintPyAdapter:
         if subset:
             config += f"mintpy.subset.lalo         = {subset}\n"
 
+        for key, value in (extra_options or {}).items():
+            config += f"{key.ljust(26)} = {value}\n"
+
         config_path.write_text(config)
         return config_path
 
@@ -427,7 +492,7 @@ class MintPyAdapter:
             "--work-dir", str(self.work_dir),
             "--dostep", "load_data",
         ]
-        return subprocess.run(cmd, check=False, env=_mintpy_env())
+        return subprocess.run(cmd, check=False, env=_mintpy_env(self.era5_source))
 
     def run_full_pipeline(self, config_path: Optional[Path] = None) -> subprocess.CompletedProcess:
         """Run the full MintPy SBAS pipeline (all steps), blocking until done."""
@@ -439,14 +504,20 @@ class MintPyAdapter:
             str(config_path),
             "--work-dir", str(self.work_dir),
         ]
-        return subprocess.run(cmd, check=False, env=_mintpy_env())
+        return subprocess.run(cmd, check=False, env=_mintpy_env(self.era5_source))
 
     def start_full_pipeline(
         self,
         config_path: Optional[Path] = None,
         log_path: Optional[Path] = None,
+        start_step: Optional[str] = None,
+        end_step: Optional[str] = None,
     ) -> subprocess.Popen:
         """Start the full MintPy SBAS pipeline without blocking.
+
+        `start_step` resumes from that step (MintPy's `--start`) and appends to the
+        log instead of replacing it; the earlier steps must have completed.
+        `end_step` stops after that step (MintPy's `--end`).
 
         Stdout/stderr are redirected to `log_path` (default: work_dir/mintpy.log)
         so a caller can tail progress while the process runs, and can call
@@ -464,5 +535,72 @@ class MintPyAdapter:
             str(config_path),
             "--work-dir", str(self.work_dir),
         ]
-        log_handle = log_path.open("w", encoding="utf-8")
-        return subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=_mintpy_env())
+        if start_step:
+            cmd += ["--start", start_step]
+        if end_step:
+            cmd += ["--end", end_step]
+        log_handle = log_path.open("a" if start_step else "w", encoding="utf-8")
+        return subprocess.Popen(cmd, stdout=log_handle, stderr=subprocess.STDOUT, env=_mintpy_env(self.era5_source))
+
+    def pin_reference_point(self, candidates: int = 5) -> Optional[dict]:
+        """Replace MintPy's reference pixel with a deterministic one, away from the edge.
+
+        Two things about MintPy's automatic choice (`mintpy.reference.yx = no`):
+
+        * It is not the most coherent pixel. It picks a random pixel among those
+          with average coherence above `mintpy.reference.minCoherence`, so two runs on
+          the same data can use different references and give velocities that differ
+          by a constant.
+        * It can land on row 0 or column 0. MintPy's `diff.py` tests `if ref_y and
+          ref_x`, which is false for 0, so it then skips re-referencing the
+          tropospheric (and tide) delay files and leaves a common-mode signal of tens
+          of millimetres in every time series.
+
+        Run this after the `reference_point` step. It selects the pixel with the highest
+        average coherence, smoothed over 3 x 3 pixels so one lucky pixel does not win,
+        among pixels that are valid in every interferogram and not on the border.
+        Returns {"previous": (row, column), "chosen": (row, column)}, or None when
+        nothing was changed (the stack or the coherence maps are missing, or no
+        candidate could be set).
+        """
+        stack = self.work_dir / "inputs" / "ifgramStack.h5"
+        coh_file = self.work_dir / "avgSpatialCoh.h5"
+        mask_file = self.work_dir / "maskConnComp.h5"
+        if not (stack.exists() and coh_file.exists() and mask_file.exists()):
+            return None
+        with h5py.File(stack, "r") as f:
+            previous = (int(f.attrs["REF_Y"]), int(f.attrs["REF_X"]))
+        with h5py.File(coh_file, "r") as f:
+            coherence = np.nan_to_num(np.asarray(f["coherence"], dtype="float64"))
+        with h5py.File(mask_file, "r") as f:
+            valid = np.asarray(f["mask"], dtype=bool)
+        score = _smoothed_coherence(np.where(valid, coherence, 0.0))
+        score[[0, -1], :] = -1.0
+        score[:, [0, -1]] = -1.0
+        order = np.argsort(-score, axis=None, kind="stable")[:candidates]   # ties: first in row order
+        reference_point = Path(find_smallbaseline() or _SMALLBASELINE).with_name("reference_point.py")
+        for flat in order:
+            row, column = (int(i) for i in np.unravel_index(flat, score.shape))
+            if score[row, column] <= 0:
+                break
+            if (row, column) == previous:
+                return None
+            result = subprocess.run(
+                [str(reference_point), str(stack), "-y", str(row), "-x", str(column), "--force"],
+                cwd=self.work_dir, check=False, env=_mintpy_env(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if result.returncode == 0:
+                return {"previous": previous, "chosen": (row, column)}
+        return None
+
+
+def _smoothed_coherence(coherence: np.ndarray) -> np.ndarray:
+    """3 x 3 mean of a coherence map; pixels next to invalid ones (0) score lower."""
+    padded = np.pad(coherence, 1)
+    rows, columns = coherence.shape
+    total = np.zeros_like(coherence)
+    for dy in range(3):
+        for dx in range(3):
+            total += padded[dy:dy + rows, dx:dx + columns]
+    return total / 9.0

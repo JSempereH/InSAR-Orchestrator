@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { mintpyApi } from "../../api/client";
 import { LoadingDots } from "../LoadingDots";
+import { ProcessingDetails } from "./ProcessingDetails";
 
 interface MintPyPanelProps {
   projectId: string;
@@ -132,6 +133,16 @@ export function MintPyPanel({ projectId, onOpenViewer }: MintPyPanelProps) {
         </div>
       )}
 
+      {!!status?.warnings?.length && (
+        <div style={{
+          marginTop: 10, padding: "8px 12px", fontSize: 12, lineHeight: 1.5,
+          background: "var(--warning-light)", color: "var(--warning)",
+          border: "1px solid var(--warning-border)", borderRadius: "var(--radius)",
+        }}>
+          {status.warnings.map((w) => <div key={w}>{w}</div>)}
+        </div>
+      )}
+
       {status && status.status !== "NOT_STARTED" && (
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 12, display: "flex", gap: 12, color: "var(--text-muted)" }}>
@@ -189,6 +200,8 @@ export function MintPyPanel({ projectId, onOpenViewer }: MintPyPanelProps) {
           </button>
         </div>
       )}
+
+      <ProcessingDetails projectId={projectId} />
     </div>
   );
 }

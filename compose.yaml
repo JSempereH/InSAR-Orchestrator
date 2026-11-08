@@ -1,7 +1,7 @@
 # InSAR Orchestrator: one container, one port.
 #
 #   cp .env.example .env        # set APP_PASSWORD at least
-#   docker compose up -d        # or: podman compose up -d
+#   docker compose up -d --build   # or: podman compose up -d --build
 #
 # Everything the app stores (database, downloads, encryption key, rclone
 # remotes) lives in ./data, so backing up or moving the app means copying that
@@ -9,6 +9,7 @@
 
 services:
   insar:
+    # `up --build` builds the image from this folder and tags it with this name.
     image: ${INSAR_IMAGE:-ghcr.io/jsempereh/insar-orchestrator:latest}
     build: .
     restart: unless-stopped

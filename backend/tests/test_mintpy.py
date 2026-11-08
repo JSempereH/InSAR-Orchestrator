@@ -190,3 +190,87 @@ def test_status_is_not_started_when_only_part_of_the_outputs_exist(client):
     _write_geocoded_timeseries(project["storage_path"])  # no velocity map yet
 
     assert client.get(f"/api/projects/{project['id']}/mintpy/status").json()["status"] == "NOT_STARTED"
+
+
+def test_timeseries_endpoint_reads_the_series_the_velocity_map_was_computed_from(client):
+    project = _create_project(client)
+    _write_geocoded_timeseries(project["storage_path"])           # raw: 0 and 5 mm at the test pixel
+    work_dir = Path(project["storage_path"]) / "mintpy"
+    with h5py.File(work_dir / "timeseries_ERA5_demErr.h5", "w") as f:    # corrected: 0 and 3 mm
+        f.attrs.update({"X_FIRST": 0.0, "Y_FIRST": 1.0, "X_STEP": 0.5, "Y_STEP": -0.5, "WIDTH": 3, "LENGTH": 3})
+        f.create_dataset("date", data=[b"20230101", b"20230107"])
+        data = np.zeros((2, 3, 3), dtype="float32")
+        data[:, 0, 0] = [0.0, 0.003]
+        f.create_dataset("timeseries", data=data)
+    with h5py.File(work_dir / "velocity.h5", "w") as f:
+        f.attrs.update({"X_FIRST": 0.0, "Y_FIRST": 1.0, "X_STEP": 0.5, "Y_STEP": -0.5, "WIDTH": 3, "LENGTH": 3,
+                        "FILE_PATH": "/anywhere/timeseries_ERA5_demErr.h5"})
+        f.create_dataset("velocity", data=np.zeros((3, 3), dtype="float32"))
+
+    body = client.get(f"/api/projects/{project['id']}/mintpy/timeseries", params={"lat": 1.0, "lon": 0.0}).json()
+    assert body["values_mm"] == pytest.approx([0.0, 3.0])
+
+
+# ── deleting a project's downloaded data ─────────────────────────────────────
+
+def _project_with_results(client, tmp_path):
+    from app import models
+    from app.database import SessionLocal
+
+    root = tmp_path / "proj"
+    (root / "mintpy").mkdir(parents=True)
+    (root / "mintpy" / "velocity.h5").write_bytes(b"x" * 100)
+    (root / "provenance.json").write_text("{}")
+    (root / "pair-folder").mkdir()
+    (root / "pair-folder" / "a.tif").write_bytes(b"x" * 50)
+    (root / "slc").mkdir()
+    (root / "slc" / "keep.zip").write_bytes(b"x")
+    db = SessionLocal()
+    project = models.Project(name="delete-data-project", geometry={}, storage_path=str(root))
+    db.add(project)
+    db.commit()
+    pid = project.id
+    db.close()
+    return pid, root
+
+
+def test_deleting_downloaded_data_also_removes_mintpy_results(client, tmp_path):
+    from app.services import mintpy_service
+
+    pid, root = _project_with_results(client, tmp_path)
+    # A run finished earlier in this session is remembered in memory.
+    mintpy_service._runs[pid] = mintpy_service.MintPyRunState(
+        project_id=pid, status="SUCCEEDED", work_dir=str(root / "mintpy"))
+
+    assert client.delete(f"/api/projects/{pid}/download-data").status_code == 200
+
+    assert sorted(p.name for p in root.iterdir()) == ["slc"]
+    status = client.get(f"/api/projects/{pid}/mintpy/status").json()
+    assert status["status"] == "NOT_STARTED"
+    assert status["disk_usage"]["total_bytes"] == 0
+
+
+def test_deleting_downloaded_data_is_refused_while_mintpy_runs(client, tmp_path):
+    from app.services import mintpy_service
+
+    pid, root = _project_with_results(client, tmp_path)
+    mintpy_service._runs[pid] = mintpy_service.MintPyRunState(
+        project_id=pid, status="RUNNING", work_dir=str(root / "mintpy"))
+    try:
+        r = client.delete(f"/api/projects/{pid}/download-data")
+        assert r.status_code == 409
+        assert (root / "mintpy" / "velocity.h5").exists()
+    finally:
+        mintpy_service._runs.pop(pid, None)
+
+
+def test_mintpy_disk_usage_ignores_the_slc_folder(tmp_path):
+    from app.services import mintpy_service
+
+    (tmp_path / "slc").mkdir()
+    (tmp_path / "slc" / "big.zip").write_bytes(b"x" * 1000)
+    (tmp_path / "pair").mkdir()
+    (tmp_path / "pair" / "a.tif").write_bytes(b"x" * 10)
+    usage = mintpy_service._compute_disk_usage(tmp_path)
+    assert usage["extracted_bytes"] == 10
+    assert usage["total_bytes"] == 10

@@ -78,6 +78,7 @@ class BatchOut(BaseModel):
     status: str
     auto_download: bool
     run_mintpy_when_done: bool = False
+    parameters: Optional[dict[str, Any]] = None
     created_at: datetime
 
     class Config:
