@@ -1,0 +1,17 @@
+ALAC  10SEP15  1  Antenna_and_Radome_Type_Changed
+ALAC  10SEP15  1  Receiver_Make_and_Model_Changed
+GOLD  95OCT31  1  Antenna_Type_Changed
+GOLD  00JUN30  1  Elevation_Cutoff_Changed
+GOLD  00JUN30  1  Receiver_Make_and_Model_Changed
+GOLD  11SEP19  1  Receiver_Make_and_Model_Changed
+GOLD  19APR26  1  Elevation_Cutoff_Changed
+GOLD  19APR26  1  Receiver_Make_and_Model_Changed
+YEBE  99OCT14  1  Antenna_Type_Changed
+YEBE  99NOV18  1  Antenna_Type_Changed
+YEBE  21MAR24  1  Antenna_and_Radome_Type_Changed
+YEBE  21MAR24  1  Receiver_Make_and_Model_Changed
+GOLD  94JAN17  2   363.078   201.965  6.7 ci3144585
+GOLD  95SEP20  2   128.825    77.318  5.8 ci3231786
+GOLD  99OCT16  2   575.440   107.625  7.1 ci9108652
+GOLD  99OCT16  2   128.825    99.393  5.8 ci3320848
+ALAC  03MAY21  2   407.380   393.183  6.8 usp000bxpg

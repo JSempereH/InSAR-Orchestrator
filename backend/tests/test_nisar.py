@@ -168,6 +168,7 @@ def _project_folder(client, name, granule=True):
 def test_mintpy_needs_granules_on_disk_for_a_nisar_project(client, monkeypatch):
     created, folder = _project_folder(client, "NISAR no files", granule=False)
     monkeypatch.setattr(mintpy_service, "mintpy_available", lambda: True)
+    monkeypatch.setattr(type(mintpy_service.get_engine("nisar_gunw")), "availability", lambda self: Availability(True))
     with pytest.raises(RuntimeError, match="No downloaded interferograms"):
         mintpy_service.start_run(created["id"], folder, engine_id="nisar_gunw")
 
