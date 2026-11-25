@@ -7,6 +7,7 @@ import pytest
 from app.database import SessionLocal
 from app.models import Batch, Job, JobStatus, Project
 from app.services import mintpy_service, provenance_service
+from insar_core.engines import get_engine
 
 GEOMETRY = {"type": "Polygon", "coordinates": [[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]]}
 
@@ -134,10 +135,11 @@ def _fake_adapter(code=0, unzip_error=None, calls=None):
     calls = [] if calls is None else calls
 
     class FakeAdapter:
-        def __init__(self, downloads_dir, work_dir):
+        def __init__(self, downloads_dir, work_dir, engine=None):
             self.downloads_dir, self.work_dir = Path(downloads_dir), Path(work_dir)
+            self.engine = get_engine(engine.info.id if engine else None)
 
-        def unzip_all(self, geometry=None):
+        def prepare_inputs(self, geometry=None):
             if unzip_error:
                 raise RuntimeError(unzip_error)
             return 2
@@ -233,8 +235,9 @@ def _patch_defaults(monkeypatch, method="pyaps"):
         if not method:
             return None
         # Like the real function: the custom config wins over MintPy's default.
-        override = "no" if "troposphericDelay.method = no" in text else method
-        return {"mintpy.troposphericDelay.method": override}
+        chosen = [line.split("=")[1].strip() for line in text.splitlines()
+                  if line.startswith("mintpy.troposphericDelay.method")]
+        return {"mintpy.troposphericDelay.method": chosen[-1] if chosen else method}
 
     monkeypatch.setattr(mintpy_service, "mintpy_effective_options", effective)
 
@@ -282,10 +285,11 @@ def test_a_run_without_a_login_passes_the_override_and_records_the_warning(proje
     seen = {}
 
     class Adapter:
-        def __init__(self, downloads_dir, work_dir):
+        def __init__(self, downloads_dir, work_dir, engine=None):
             self.work_dir = Path(work_dir)
+            self.engine = get_engine(None)
 
-        def unzip_all(self, geometry=None):
+        def prepare_inputs(self, geometry=None):
             return 0
 
         def write_config(self, config_path=None, geometry=None, extra_options=None):
@@ -305,7 +309,8 @@ def test_a_run_without_a_login_passes_the_override_and_records_the_warning(proje
     monkeypatch.setattr(mintpy_service, "era5_source", lambda: None)
     record, _ = _run_inline(project, monkeypatch, Adapter)
 
-    assert seen["extra_options"] == {"mintpy.troposphericDelay.method": "no"}
+    # the unwrapping correction is the app's own step, so MintPy is always told to leave it
+    assert seen["extra_options"] == {"mintpy.troposphericDelay.method": "no", "mintpy.unwrapError.method": "no"}
     assert record["mintpy_run"]["status"] == "SUCCEEDED"
     assert record["mintpy_run"]["warnings"] and "ERA5" in record["mintpy_run"]["warnings"][0]
     assert record["mintpy"]["options"]["mintpy.troposphericDelay.method"] == "no"
@@ -411,7 +416,7 @@ def test_a_run_stopped_by_clean_triplets_resumes_and_says_so(project, monkeypatc
             return FakeProcess(self.downloads_dir, 0)
 
     record, _ = _run_inline(project, monkeypatch, Adapter)
-    assert starts == [None, "quick_overview", "correct_unwrap_error"]
+    assert starts == [None, "quick_overview", "invert_network"]
     assert record["mintpy_run"]["status"] == "SUCCEEDED"
     assert any("triplet" in w for w in record["mintpy_run"]["warnings"])
 
@@ -426,8 +431,175 @@ def test_other_failures_are_not_retried(project, monkeypatch):
 def test_the_reference_pixel_is_fixed_between_the_two_stages(project, monkeypatch):
     calls = []
     record, _ = _run_inline(project, monkeypatch, _fake_adapter(code=0, calls=calls))
-    assert calls == [("start", None, "reference_point"), ("pin",), ("start", "quick_overview", None)]
+    assert calls == [("start", None, "reference_point"), ("pin",), ("start", "quick_overview", "quick_overview"),
+                     ("start", "invert_network", None)]
     assert record["mintpy_run"]["status"] == "SUCCEEDED"
+
+
+# ── unwrapping errors, corrected between two MintPy stages ───────────────────
+
+def _adapter_with_a_stack(neighbours=3, calls=None, seen=None):
+    """A MintPy stand-in whose first stage leaves a small stack with one patch a cycle off."""
+    import h5py
+    import numpy as np
+
+    dates = [f"2023{m:02d}{d:02d}" for m in range(1, 4) for d in (3, 15, 27)]
+    pairs = [(a, b) for i, a in enumerate(dates) for b in dates[i + 1:i + 1 + neighbours]]
+
+    class Adapter(_fake_adapter(code=0, calls=calls)):
+        def write_config(self, config_path=None, geometry=None, extra_options=None):
+            path = super().write_config(config_path, geometry, extra_options)
+            path.write_text(path.read_text() + "".join(f"{k} = {v}\n" for k, v in (extra_options or {}).items()))
+            return path
+
+        def start_full_pipeline(self, config_path=None, start_step=None, end_step=None):
+            if start_step is None:
+                rng = np.random.default_rng(0)
+                per_date = {d: rng.normal(0, 3.0, (12, 16)) for d in dates}
+                phase = np.array([per_date[b] - per_date[a] for a, b in pairs], dtype="float32")
+                phase[4, 3:8, 4:10] += 2 * np.pi
+                (self.work_dir / "inputs").mkdir(parents=True, exist_ok=True)
+                with h5py.File(self.work_dir / "inputs" / "ifgramStack.h5", "w") as f:
+                    f.create_dataset("unwrapPhase", data=phase)
+                    f.create_dataset("date", data=np.array([[a.encode(), b.encode()] for a, b in pairs]))
+                    f.create_dataset("dropIfgram", data=np.ones(len(pairs), dtype=bool))
+                    f.attrs.update({"REF_Y": 0, "REF_X": 0})
+            if start_step == "invert_network" and seen is not None:
+                seen["config_at_inversion"] = Path(config_path).read_text()
+            return super().start_full_pipeline(config_path, start_step, end_step)
+
+    return Adapter
+
+
+def test_unwrapping_errors_are_corrected_before_the_inversion_and_mintpy_is_pointed_at_the_result(project, monkeypatch):
+    import h5py
+    from insar_core.analysis import unwrap_correction
+
+    seen = {}
+    record, work_dir = _run_inline(project, monkeypatch, _adapter_with_a_stack(seen=seen))
+    assert record["mintpy_run"]["status"] == "SUCCEEDED" and not record["mintpy_run"]["warnings"]
+    # MintPy's inversion reads the corrected phases when its phase closure method is named
+    assert "mintpy.unwrapError.method  = phase_closure" in seen["config_at_inversion"]
+    assert "mintpy.unwrapError.method  = phase_closure" in record["mintpy"]["custom_config"]
+    with h5py.File(work_dir / "inputs" / "ifgramStack.h5") as f:
+        assert unwrap_correction.DATASET_OUT in f
+    assert unwrap_correction.read_summary(work_dir)["pixels"]["corrected"] == 30
+
+
+def _adapter_that_finishes(seen=None):
+    """As above, and the last stage leaves the mask MintPy would."""
+    import h5py
+    import numpy as np
+
+    class Adapter(_adapter_with_a_stack(seen=seen)):
+        def start_full_pipeline(self, config_path=None, start_step=None, end_step=None):
+            process = super().start_full_pipeline(config_path, start_step, end_step)
+            if start_step is None:
+                # make a patch of the stack unreadable: closures near half a cycle
+                with h5py.File(self.work_dir / "inputs" / "ifgramStack.h5", "r+") as f:
+                    phase = f["unwrapPhase"][:]
+                    phase[:, 9:12, 10:16] += np.random.default_rng(1).normal(0, 1.6, (phase.shape[0], 3, 6)).astype("float32")
+                    f["unwrapPhase"][...] = phase
+            if start_step == "invert_network":
+                with h5py.File(self.work_dir / "maskTempCoh.h5", "w") as f:
+                    f.create_dataset("mask", data=np.ones((12, 16), dtype=bool))
+                    f.attrs.update({"REF_Y": 0, "REF_X": 0})
+            return process
+
+    return Adapter
+
+
+def test_pixels_whose_closures_cannot_be_read_are_left_out_of_the_result(project, monkeypatch):
+    import h5py
+    from insar_core.pipeline import mask_refinement
+
+    record, work_dir = _run_inline(project, monkeypatch, _adapter_that_finishes())
+    assert record["mintpy_run"]["status"] == "SUCCEEDED" and not record["mintpy_run"]["warnings"]
+    summary = mask_refinement.read_summary(work_dir)
+    assert summary["kept_by_mintpy"] == 192 and 10 <= summary["dropped"]["unreadable_closures"] <= 18
+    with h5py.File(work_dir / "maskTempCoh.h5") as f:
+        mask = f["mask"][:].astype(bool)
+    assert not mask[9:12, 10:16].all() and mask[3:8, 4:10].all()        # the corrected patch stays, the noisy one goes
+    with h5py.File(work_dir / mask_refinement.ORIGINAL_FILE) as f:
+        assert f["mask"][:].all()
+
+
+def test_the_stricter_mask_is_off_by_default_when_the_network_has_long_pairs_and_on_when_asked(project, monkeypatch):
+    import h5py
+    import numpy as np
+    from insar_core.pipeline import mask_refinement
+
+    work_dir = project["folder"] / "mintpy"
+    base = _adapter_that_finishes()
+
+    class WithLongPairs(base):
+        def start_full_pipeline(self, config_path=None, start_step=None, end_step=None):
+            process = super().start_full_pipeline(config_path, start_step, end_step)
+            if start_step is None:
+                with h5py.File(self.work_dir / "inputs" / "ifgramStack.h5", "r+") as f:
+                    dates = f["date"][:]
+                    first, last = dates[0][0], dates[-1][1]
+                    n = len(dates)
+                    phase = f["unwrapPhase"][:]
+                    for name in ("unwrapPhase", "date", "dropIfgram"):
+                        del f[name]
+                    extra = np.array([[first, last]])           # one pair spanning the whole period
+                    f.create_dataset("unwrapPhase", data=np.concatenate([phase, phase[:1]]))
+                    f.create_dataset("date", data=np.concatenate([dates, extra]))
+                    f.create_dataset("dropIfgram", data=np.ones(n + 1, dtype=bool))
+                    f.attrs.update({"REF_Y": 0, "REF_X": 0})
+            return process
+
+    monkeypatch.setattr(mintpy_service, "MintPyAdapter", WithLongPairs)
+    mintpy_service._runs[project["id"]] = mintpy_service.MintPyRunState(project_id=project["id"], work_dir=str(work_dir))
+    mintpy_service._run(project["id"], project["folder"], work_dir, GEOMETRY, _context(project["id"]))
+    assert mask_refinement.read_summary(work_dir) is None              # left to the person
+
+    mintpy_service._runs[project["id"]] = mintpy_service.MintPyRunState(
+        project_id=project["id"], work_dir=str(work_dir), options={"app.mask.unreadableClosures": "yes"})
+    mintpy_service._run(project["id"], project["folder"], work_dir, GEOMETRY, _context(project["id"]))
+    assert mask_refinement.read_summary(work_dir) is not None          # asked for
+
+
+def test_the_stricter_mask_is_left_out_when_the_person_turns_it_off(project, monkeypatch):
+    from insar_core.pipeline import mask_refinement
+
+    work_dir = project["folder"] / "mintpy"
+    monkeypatch.setattr(mintpy_service, "MintPyAdapter", _adapter_that_finishes())
+    mintpy_service._runs[project["id"]] = mintpy_service.MintPyRunState(
+        project_id=project["id"], work_dir=str(work_dir), options={"app.mask.unreadableClosures": "no"})
+    mintpy_service._run(project["id"], project["folder"], work_dir, GEOMETRY, _context(project["id"]))
+    assert mask_refinement.read_summary(work_dir) is None
+    assert "app." not in (work_dir / "smallbaselineApp.cfg").read_text()   # never handed to MintPy
+
+
+def test_the_correction_is_left_out_when_the_person_turns_it_off(project, monkeypatch):
+    from insar_core.analysis import unwrap_correction
+
+    seen = {}
+    work_dir = project["folder"] / "mintpy"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    (work_dir / unwrap_correction.SUMMARY_FILE).write_text("{}")          # the account of an earlier run
+    monkeypatch.setattr(mintpy_service, "MintPyAdapter", _adapter_with_a_stack(seen=seen))
+    mintpy_service._runs[project["id"]] = mintpy_service.MintPyRunState(
+        project_id=project["id"], work_dir=str(work_dir), options={"mintpy.unwrapError.method": "no"})
+    mintpy_service._run(project["id"], project["folder"], work_dir, GEOMETRY, _context(project["id"]))
+    assert "phase_closure" not in seen["config_at_inversion"]
+    assert unwrap_correction.read_summary(work_dir) is None                # and the old account does not outlive it
+
+
+def test_a_network_too_open_to_correct_is_said_only_when_the_correction_was_asked_for(project, monkeypatch):
+    record, _ = _run_inline(project, monkeypatch, _adapter_with_a_stack(neighbours=1))
+    assert record["mintpy_run"]["status"] == "SUCCEEDED" and not record["mintpy_run"]["warnings"]
+
+    work_dir = project["folder"] / "mintpy"
+    monkeypatch.setattr(mintpy_service, "MintPyAdapter", _adapter_with_a_stack(neighbours=1))
+    mintpy_service._runs[project["id"]] = mintpy_service.MintPyRunState(
+        project_id=project["id"], work_dir=str(work_dir), options={"mintpy.unwrapError.method": "phase_closure"})
+    mintpy_service._run(project["id"], project["folder"], work_dir, GEOMETRY, _context(project["id"]))
+    record = provenance_service.read_run_record(project["folder"])
+    assert record["mintpy_run"]["status"] == "SUCCEEDED"
+    assert any("not corrected" in w and "triplet" in w for w in record["mintpy_run"]["warnings"])
 
 
 def test_a_reference_pixel_chosen_by_the_user_is_left_alone(project, monkeypatch):
@@ -441,3 +613,186 @@ def test_a_reference_pixel_chosen_by_the_user_is_left_alone(project, monkeypatch
 
     _run_inline(project, monkeypatch, Adapter)
     assert ("pin",) not in calls
+
+
+# ── options and reference point chosen by the person ─────────────────────────
+
+def _run_with(project, monkeypatch, options=None, reference=None, adapter=None):
+    seen = {}
+    base = adapter or _fake_adapter()
+
+    class Adapter(base):
+        def write_config(self, config_path=None, geometry=None, extra_options=None):
+            seen["extra_options"] = dict(extra_options or {})
+            path = super().write_config(config_path, geometry, extra_options)
+            text = path.read_text() + "".join(f"{k} = {v}\n" for k, v in (extra_options or {}).items())
+            path.write_text(text)
+            return path
+
+        def start_full_pipeline(self, config_path=None, start_step=None, end_step=None):
+            seen.setdefault("marker", mintpy_service._read_marker(self.work_dir))
+            return super().start_full_pipeline(config_path, start_step, end_step)
+
+    monkeypatch.setattr(mintpy_service, "MintPyAdapter", Adapter)
+    work_dir = project["folder"] / "mintpy"
+    mintpy_service._runs[project["id"]] = mintpy_service.MintPyRunState(
+        project_id=project["id"], work_dir=str(work_dir), options=options or {}, reference=reference,
+    )
+    mintpy_service._run(project["id"], project["folder"], work_dir, GEOMETRY, _context(project["id"]))
+    return seen, provenance_service.read_run_record(project["folder"])
+
+
+def test_the_persons_options_reach_the_config_and_the_provenance_record(project, monkeypatch):
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: "arco")
+    seen, record = _run_with(project, monkeypatch, options={"mintpy.deramp": "linear", "mintpy.network.tempBaseMax": "48"})
+    assert seen["extra_options"]["mintpy.deramp"] == "linear"
+    assert record["mintpy"]["custom_config"].count("mintpy.network.tempBaseMax = 48") == 1
+
+
+def test_a_chosen_reference_point_is_written_and_the_app_does_not_pick_another(project, monkeypatch):
+    calls = []
+    seen, _ = _run_with(project, monkeypatch, reference={"lat": 40.5, "lon": -3.6}, adapter=_fake_adapter(calls=calls))
+    assert seen["extra_options"]["mintpy.reference.lalo"] == "40.500000,-3.600000"
+    assert ("pin",) not in calls
+
+
+def test_the_request_is_kept_in_the_marker_so_a_restart_repeats_it(project, monkeypatch):
+    seen, _ = _run_with(project, monkeypatch, options={"mintpy.deramp": "linear"}, reference={"lat": 40.5, "lon": -3.6})
+    assert seen["marker"]["options"] == {"mintpy.deramp": "linear"}
+    assert seen["marker"]["reference"] == {"lat": 40.5, "lon": -3.6}
+
+
+def test_era5_asked_for_with_no_weather_source_still_falls_back_and_says_so(project, monkeypatch):
+    _patch_defaults(monkeypatch, method="no")
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: None)
+    seen, _ = _run_with(project, monkeypatch, options={"mintpy.troposphericDelay.method": "pyaps"})
+    assert seen["extra_options"]["mintpy.troposphericDelay.method"] == "no"
+    assert "ERA5" in mintpy_service._runs[project["id"]].warnings[0]
+
+
+def test_another_troposphere_method_needs_no_weather_data(monkeypatch):
+    _patch_defaults(monkeypatch)
+    monkeypatch.setattr(mintpy_service, "era5_source", lambda: pytest.fail("should not be asked"))
+    chosen = {"mintpy.troposphericDelay.method": "height_correlation"}
+    assert mintpy_service._troposphere_options(chosen) == ({}, [], None)
+
+
+def test_a_bad_option_is_refused_before_anything_starts(project):
+    with pytest.raises(RuntimeError, match="Remove a ramp"):
+        mintpy_service.start_run(project["id"], project["folder"], options={"mintpy.deramp": "cubic"})
+    with pytest.raises(RuntimeError, match="latitude"):
+        mintpy_service.start_run(project["id"], project["folder"], reference={"lat": 95, "lon": 0})
+    assert project["id"] not in mintpy_service._runs
+
+
+def test_the_endpoint_hands_the_request_to_the_service(client, project, monkeypatch):
+    got = {}
+    monkeypatch.setattr(mintpy_service, "start_run", lambda *a, **k: got.update(k) or {"status": "RUNNING"})
+    reply = client.post(f"/api/projects/{project['id']}/mintpy/run",
+                        json={"options": {"mintpy.deramp": "linear"}, "reference": {"lat": 40.5, "lon": -3.6}})
+    assert reply.status_code == 200
+    assert got["options"] == {"mintpy.deramp": "linear"} and got["reference"] == {"lat": 40.5, "lon": -3.6}
+    client.post(f"/api/projects/{project['id']}/mintpy/run")      # no body, as before
+    assert got["options"] is None and got["reference"] is None
+
+
+def test_a_bad_request_is_a_422_that_says_why(client, project):
+    reply = client.post(f"/api/projects/{project['id']}/mintpy/run", json={"options": {"mintpy.deramp": "cubic"}})
+    assert reply.status_code == 422 and "Remove a ramp" in reply.json()["detail"]
+
+
+def test_the_options_endpoint_lists_every_option_with_its_default(client, project, monkeypatch):
+    monkeypatch.setattr(mintpy_service, "mintpy_effective_options", lambda text: {"mintpy.deramp": "no"})
+    body = client.get(f"/api/projects/{project['id']}/mintpy/options").json()
+    by_key = {o["key"]: o for o in body["options"]}
+    assert by_key["mintpy.deramp"]["default"] == "no" and by_key["mintpy.deramp"]["choices"]
+    assert by_key["mintpy.network.tempBaseMax"]["default"] == "auto"
+    assert body["last_run"] == {} and body["last_reference"] is None
+
+
+# ── quality checks ───────────────────────────────────────────────────────────
+
+def test_a_successful_run_records_its_quality_checks(project, monkeypatch):
+    monkeypatch.setattr(mintpy_service, "compute_qc", lambda work_dir: {
+        "status": "warn", "checks": [{"id": "coherence", "status": "warn"}], "metrics": {"velocity_std_mm_yr_median": 3.0},
+        "thresholds": {},
+    })
+    record, _ = _run_inline(project, monkeypatch, _fake_adapter())
+    assert record["quality"] == {"status": "warn", "checks": [{"id": "coherence", "status": "warn"}],
+                                 "metrics": {"velocity_std_mm_yr_median": 3.0}}
+
+
+def test_a_failed_run_has_no_quality_section(project, monkeypatch):
+    record, _ = _run_inline(project, monkeypatch, _fake_adapter(code=1))
+    assert record["quality"] is None
+
+
+def test_a_crash_in_the_checks_never_breaks_the_run(project, monkeypatch):
+    def boom(work_dir):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(mintpy_service, "compute_qc", boom)
+    record, _ = _run_inline(project, monkeypatch, _fake_adapter())
+    assert record["mintpy_run"]["status"] == "SUCCEEDED" and record["quality"] is None
+
+
+def test_the_quality_endpoint_reads_the_results_on_disk(client, project):
+    reply = client.get(f"/api/projects/{project['id']}/mintpy/quality")
+    assert reply.status_code == 422 and "no MintPy results" in reply.json()["detail"]
+    import h5py
+    work = project["folder"] / "mintpy"
+    work.mkdir(parents=True, exist_ok=True)
+    with h5py.File(work / "velocity.h5", "w") as handle:
+        handle.attrs.update({"REF_Y": 5, "REF_X": 5, "LENGTH": 10, "WIDTH": 10})
+    body = client.get(f"/api/projects/{project['id']}/mintpy/quality").json()
+    assert body["status"] in ("ok", "warn", "fail", "unknown") and isinstance(body["checks"], list)
+
+
+def _run_with_fading(project, monkeypatch, adapter, option="yes"):
+    work_dir = project["folder"] / "mintpy"
+    monkeypatch.setattr(mintpy_service, "MintPyAdapter", adapter)
+    mintpy_service._runs[project["id"]] = mintpy_service.MintPyRunState(
+        project_id=project["id"], work_dir=str(work_dir), options={"app.fading.correction": option})
+    mintpy_service._run(project["id"], project["folder"], work_dir, GEOMETRY, _context(project["id"]))
+    return provenance_service.read_run_record(project["folder"]), work_dir
+
+
+def test_the_fading_correction_is_not_run_unless_asked_for(project, monkeypatch):
+    from insar_core.analysis import fading_correction
+
+    monkeypatch.setattr(fading_correction, "correct_stack", lambda *a, **k: pytest.fail("ran without being asked"))
+    record, work_dir = _run_inline(project, monkeypatch, _adapter_with_a_stack())
+    assert record["mintpy_run"]["status"] == "SUCCEEDED"
+    assert fading_correction.read_summary(work_dir) is None
+
+
+def test_a_network_that_cannot_fix_the_constants_runs_on_and_says_why(project, monkeypatch):
+    import h5py
+    import numpy as np
+
+    class Adapter(_adapter_with_a_stack()):
+        def start_full_pipeline(self, config_path=None, start_step=None, end_step=None):
+            process = super().start_full_pipeline(config_path, start_step, end_step)
+            if start_step is None:
+                with h5py.File(self.work_dir / "inputs" / "ifgramStack.h5", "r+") as f:
+                    f.create_dataset("coherence", data=np.full(f["unwrapPhase"].shape, 0.8, "float32"))
+            return process
+
+    record, work_dir = _run_with_fading(project, monkeypatch, Adapter)
+    assert record["mintpy_run"]["status"] == "SUCCEEDED"
+    assert any("fading bias was not corrected" in w and "long interferogram" in w for w in record["mintpy_run"]["warnings"])
+    assert "app." not in (work_dir / "smallbaselineApp.cfg").read_text()          # never handed to MintPy
+
+
+def test_when_the_fading_correction_is_made_mintpy_inverts_the_corrected_phases(project, monkeypatch):
+    from insar_core.analysis import fading_correction
+
+    def fake_correct_stack(work_dir, source="unwrapPhase"):
+        (Path(work_dir) / fading_correction.SUMMARY_FILE).write_text("{}")
+        return {"a1": 0.45, "a2": 0.26}
+
+    monkeypatch.setattr(fading_correction, "correct_stack", fake_correct_stack)
+    seen = {}
+    record, work_dir = _run_with_fading(project, monkeypatch, _adapter_with_a_stack(seen=seen))
+    assert record["mintpy_run"]["status"] == "SUCCEEDED" and not record["mintpy_run"]["warnings"]
+    assert "mintpy.unwrapError.method  = phase_closure" in seen["config_at_inversion"]

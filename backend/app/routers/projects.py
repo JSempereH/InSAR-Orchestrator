@@ -13,7 +13,10 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app import models, schemas
-from app.services import archive_service, mintpy_service, provenance_service, storage_move, storage_service
+from insar_core.engines import get_engine
+from app.services import (
+    archive_service, mintpy_service, provenance_service, storage_move, storage_service, validation_service,
+)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -42,6 +45,12 @@ def _resolve_storage_path(mountpoint: Optional[str], project_name: str) -> str:
 @router.post("", response_model=schemas.ProjectOut)
 def create_project(payload: schemas.ProjectCreate, db: Session = Depends(get_db)):
     data = payload.model_dump()
+    try:
+        engine = get_engine(payload.engine)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc).strip("'\"")) from exc
+    if engine.info.acquisition == "ready_made" and not (payload.date_start and payload.date_end):
+        raise HTTPException(status_code=422, detail="A project of ready-made products needs a start and an end date.")
     mountpoint = data.pop("storage_mountpoint", None)
     data["storage_path"] = _resolve_storage_path(mountpoint, payload.name)
 
@@ -210,6 +219,7 @@ def delete_project_download_data(project_id: str, db: Session = Depends(get_db))
         mintpy_service.forget_project(project_id, storage_path)
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from exc
+    validation_service.forget_project(project_id)
     if storage_path and storage_path.exists():
         # One dir_size_bytes() (which shells out to `du`) for the whole tree
         # and, if present, one more for slc/ to subtract - not one per

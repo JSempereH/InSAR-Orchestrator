@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Project, SLCDownload
 from app.schemas import SceneOut, SLCDownloadOut, SLCDownloadRequest
-from app.services import archive_service, slc_download_queue
+from app.services import archive_service, safe_paths, slc_download_queue
 from app.services.hyp3_service import get_earthdata_credentials
 from insar_core.adapters.asf import ASFAdapter
 from insar_core.models.scene import AOI, SearchParams
@@ -88,6 +88,12 @@ def queue_slc_downloads(project_id: str, body: SLCDownloadRequest, db: Session =
     missing = [i["granule_name"] for i in items if not i["file_name"] or not i["download_url"]]
     if missing:
         raise HTTPException(400, f"Missing download URL for scene(s): {', '.join(missing[:3])}")
+    try:
+        for i in items:
+            safe_paths.plain_file_name(i["file_name"])
+            safe_paths.archive_url(i["download_url"])
+    except safe_paths.UnsafeRequest as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     record = SLCDownload(
         project_id=project_id,
@@ -137,7 +143,10 @@ def delete_slc_download_record(download_id: str, delete_files: bool = False, db:
     if delete_files:
         destination = Path(row.destination_path)
         for filename in row.filenames:
-            fpath = destination / filename
+            try:
+                fpath = safe_paths.inside(destination, filename)
+            except safe_paths.UnsafeRequest:
+                continue   # a name that would leave the folder is never deleted
             if fpath.exists():
                 freed_bytes += fpath.stat().st_size
                 fpath.unlink()

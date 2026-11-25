@@ -17,8 +17,7 @@ from app.services import download_state
 from app.services.sequential_queue import SequentialQueue
 
 _queue = SequentialQueue(name="EGMS", item_key=lambda item: item["filename"])
-_destination: Optional[Path] = None
-_adapter = None
+_last_destination: Optional[Path] = None   # only for reporting; each item carries its own
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -44,13 +43,14 @@ def start(db: Session, products: list[dict], destination: Path) -> None:
 
     Each item: {"query_id": str, "filename": str, "level": str}
     """
-    global _destination, _adapter
+    global _last_destination
 
     from app.services.egms_service import get_egms_adapter
 
-    _destination = destination
-    _adapter = get_egms_adapter(db)
-    _queue.start(products, _download_one)
+    _last_destination = destination
+    adapter = get_egms_adapter(db)
+    # Destination and adapter (with its credentials) travel with each item, so another project's queue cannot take them over.
+    _queue.start([{**p, "_destination": destination, "_adapter": adapter} for p in products], _download_one)
 
 
 def cancel() -> None:
@@ -65,7 +65,7 @@ def get_state() -> dict:
         "current_filename": current["filename"] if current else None,
         "current_progress": raw["current_progress"],
         "pending_count": raw["pending_count"],
-        "destination": str(_destination) if _destination else None,
+        "destination": str(_last_destination) if _last_destination else None,
         "total": raw["total"],
         "done": raw["done"],
         "cancelled": raw["cancelled"],
@@ -85,4 +85,4 @@ def _download_one(item: dict) -> None:
         pct = round(dl / tb * 100, 1) if tb else 0
         download_state.update(item["filename"], status="running", pct=pct, **kw)
 
-    _adapter.download(product, _destination, progress_cb=on_progress)
+    item["_adapter"].download(product, item["_destination"], progress_cb=on_progress)

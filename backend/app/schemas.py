@@ -6,7 +6,7 @@ to internal table details, and to get automatic validation of incoming data.
 """
 
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -22,6 +22,7 @@ class ProjectCreate(BaseModel):
     date_start: Optional[str] = None
     date_end: Optional[str] = None
     max_temporal_neighbors: int = 3
+    engine: str = Field("hyp3_gamma", description="Source of interferograms, see GET /api/engines")
     storage_mountpoint: Optional[str] = Field(
         None, description="Mount point of the disk to store this project's downloads on. Omit for the app default."
     )
@@ -58,6 +59,7 @@ class ProjectOut(BaseModel):
     date_start: Optional[str]
     date_end: Optional[str]
     max_temporal_neighbors: int
+    engine: str = "hyp3_gamma"
     storage_path: Optional[str]
     backup_enabled: bool = True
     archived_remote: Optional[str] = None
@@ -140,9 +142,24 @@ class SceneSearchResult(BaseModel):
 
 class SubmitBatchRequest(BaseModel):
     label: Optional[str] = None
-    max_temporal_neighbors: int = 3
+    max_temporal_neighbors: int = Field(3, ge=1, le=10)
     dry_run: bool = True
     auto_download: bool = False
+    # How the pairs are chosen. The defaults reproduce what the app always did.
+    strategy: Literal["neighbors", "baseline"] = "neighbors"
+    long_pairs_days: Optional[list[int]] = Field(
+        None, description="Neighbors strategy: also pair each date with one about this many days later. Null or an empty list "
+                          "means none (long pairs lose fast motion, see the docs)")
+    calibration_pair: bool = Field(False, description="Neighbors strategy: add one pair over the whole period, which fixes "
+                                                      "the constants of the fading bias correction")
+    dt_targets: Optional[list[int]] = Field(None, description="Temporal spacings in days; empty means 1 to 4 revisit intervals")
+    dt_tolerance: int = Field(3, ge=0, le=30)
+    dt_max: Optional[int] = Field(None, ge=1, le=730)
+    pb_max: Optional[float] = Field(150.0, gt=0, description="Largest perpendicular baseline in metres; null for no limit")
+    min_degree: int = Field(2, ge=1, le=10)
+    max_degree: int = Field(5, ge=1, le=20)
+    include_annual: bool = False
+    exclude: list[list[str]] = Field(default_factory=list, description="[reference, secondary] granule pairs to leave out")
 
 
 class ProjectRefreshRequest(BaseModel):
@@ -224,11 +241,39 @@ class SLCDownloadOut(BaseModel):
 
 # ---------- Batch submission ----------
 
+class PlannedPairOut(BaseModel):
+    reference: str
+    secondary: str
+    reference_date: str
+    secondary_date: str
+    temporal_days: int
+    perpendicular_m: Optional[float] = None
+    over_limit: bool = False
+    reason: str = ""
+    state: str = "new"      # new, submitted or excluded
+
+
+class PlannedSceneOut(BaseModel):
+    granule: str
+    date: str
+    perpendicular_m: Optional[float] = None
+
+
 class BatchPlanOut(BaseModel):
     total_pairs: int
     scene_count: int
     pairs_preview: list[list[str]]  # [[ref, sec], ...]
     estimated_size_gb: Optional[float] = None
+    # The whole network, so the interface can draw it and a person can judge it.
+    strategy: str = "neighbors"
+    credits: int = 0
+    credits_per_pair: float = 10
+    connected: bool = True
+    components: int = 1
+    over_limit: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    pairs: list[PlannedPairOut] = Field(default_factory=list)
+    scenes: list[PlannedSceneOut] = Field(default_factory=list)
 
 
 # ---------- EGMS (Copernicus ground motion) ----------
@@ -291,6 +336,21 @@ class TimeSeriesOut(BaseModel):
     # Statistical summary (see insar_core.analysis.timeseries); None when the
     # series has too few valid observations or the analysis failed.
     analysis: Optional[dict[str, Any]] = None
+
+
+# ---------- MintPy run request ----------
+
+class ReferencePointIn(BaseModel):
+    lat: float
+    lon: float
+
+
+class MintPyRunIn(BaseModel):
+    """What a person may choose for a MintPy run. Everything is optional: an empty
+    request runs with the defaults, as before this existed."""
+    options: dict[str, str] = Field(default_factory=dict, description="mintpy.* options, see GET .../mintpy/options")
+    reference: Optional[ReferencePointIn] = Field(
+        None, description="Fix the reference pixel here instead of letting the app choose it")
 
 
 # ---------- Downloads inventory (ASF/HyP3 side) ----------

@@ -4,9 +4,11 @@ from datetime import date
 from typing import List, Optional
 
 from insar_core.adapters.asf import ASFAdapter
+from insar_core.adapters.asf_burst import ASFBurstAdapter
 from insar_core.models.scene import AOI, SearchParams, SARScene, TrackSummary
 
 _adapter = ASFAdapter()
+_burst_adapter = ASFBurstAdapter()
 
 
 def get_adapter() -> ASFAdapter:
@@ -14,6 +16,16 @@ def get_adapter() -> ASFAdapter:
     a new one, since it caches raw catalog search results internally (see
     ASFAdapter._raw_search) and a fresh instance would never hit that cache."""
     return _adapter
+
+
+def get_burst_adapter() -> ASFBurstAdapter:
+    """The shared adapter that searches Sentinel-1 by bursts, for projects of the `hyp3_burst` engine."""
+    return _burst_adapter
+
+
+def adapter_for(engine_id: str):
+    """The scene search a project's engine uses: by bursts, or whole scenes."""
+    return _burst_adapter if engine_id == "hyp3_burst" else _adapter
 
 
 def search_scenes(

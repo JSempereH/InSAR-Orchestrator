@@ -73,12 +73,30 @@ def test_logout_closes_the_session(client, locked):
     assert client.get("/api/projects").status_code == 401
 
 
+def test_a_copied_cookie_stops_working_once_its_owner_logs_out(client, locked, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "downloads_dir", str(tmp_path))
+    monkeypatch.setattr(auth, "_revoked_loaded", True)
+    auth._revoked.clear()
+    login = client.post("/api/auth/login", json={"password": "correct horse"})
+    copy = login.cookies.get(auth.COOKIE_NAME)
+    other = auth.make_token()                                           # another session, never logged out
+    client.post("/api/auth/logout")
+    assert not auth.valid_token(copy) and auth.valid_token(other)
+    assert copy.split(".")[1] in (tmp_path / ".revoked_sessions.json").read_text()   # and it survives a restart
+
+
+def test_failed_logins_lock_out_only_the_client_that_made_them(client, locked):
+    auth._failures["203.0.113.9"] = [time.time()] * 5                   # someone else, guessing
+    assert client.post("/api/auth/login", json={"password": "correct horse"}).status_code == 200
+
+
 def test_tampered_or_expired_tokens_are_rejected(locked):
     good = auth.make_token()
-    expiry, _, sig = good.partition(".")
+    expiry, session_id, sig = good.split(".")
     assert auth.valid_token(good)
-    assert not auth.valid_token(f"{int(expiry) + 1000}.{sig}")          # forged expiry
-    assert not auth.valid_token(f"{expiry}.{'0' * len(sig)}")           # forged signature
+    assert not auth.valid_token(f"{int(expiry) + 1000}.{session_id}.{sig}")   # forged expiry
+    assert not auth.valid_token(f"{expiry}.other.{sig}")                      # forged session id
+    assert not auth.valid_token(f"{expiry}.{session_id}.{'0' * len(sig)}")    # forged signature
     assert not auth.valid_token("garbage") and not auth.valid_token("") and not auth.valid_token(None)
     assert not auth.valid_token(good, now=time.time() + auth.SESSION_SECONDS + 5)
 

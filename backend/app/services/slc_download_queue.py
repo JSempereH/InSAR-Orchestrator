@@ -12,9 +12,7 @@ from app.services import download_state
 from app.services.sequential_queue import SequentialQueue
 
 _queue = SequentialQueue(name="SLC", item_key=lambda item: item["file_name"])
-_destination: Optional[Path] = None
-_username: Optional[str] = None
-_password: Optional[str] = None
+_last_destination: Optional[Path] = None   # only for reporting; each item carries its own
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -24,11 +22,11 @@ def start(username: str, password: str, scenes: list[dict], destination: Path) -
 
     Each item: {"granule_name": str, "file_name": str, "download_url": str}
     """
-    global _destination, _username, _password
-    _destination = destination
-    _username = username
-    _password = password
-    _queue.start(scenes, _download_one)
+    global _last_destination
+    _last_destination = destination
+    # The destination and credentials travel with each item, so a second project
+    # starting a queue cannot redirect or re-credential a download already under way.
+    _queue.start([{**s, "_destination": destination, "_username": username, "_password": password} for s in scenes], _download_one)
 
 
 def cancel() -> None:
@@ -43,7 +41,7 @@ def get_state() -> dict:
         "current_filename": current["file_name"] if current else None,
         "current_progress": raw["current_progress"],
         "pending_count": raw["pending_count"],
-        "destination": str(_destination) if _destination else None,
+        "destination": str(_last_destination) if _last_destination else None,
         "total": raw["total"],
         "done": raw["done"],
         "cancelled": raw["cancelled"],
@@ -62,6 +60,6 @@ def _download_one(item: dict) -> None:
         download_state.update(item["file_name"], status="running", pct=pct, **kw)
 
     ASFAdapter().download(
-        item["download_url"], item["file_name"], _destination, _username, _password,
+        item["download_url"], item["file_name"], item["_destination"], item["_username"], item["_password"],
         progress_cb=on_progress,
     )

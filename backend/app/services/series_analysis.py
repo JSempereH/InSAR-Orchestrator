@@ -14,13 +14,16 @@ from insar_core.analysis import analyze_time_series
 logger = logging.getLogger(__name__)
 
 
-def with_analysis(series: dict) -> dict:
+def with_analysis(series: dict, line_of_sight: bool = False) -> dict:
     """Return a copy of `series` with an `analysis` key (None if it cannot be computed).
+
+    `line_of_sight` says the series is along a satellite's line of sight, not vertical, so the
+    summary speaks of motion towards or away from the satellite and not of uplift or subsidence.
 
     A failure in the statistics must never hide the series itself, so errors
     are logged and the plain series is still returned."""
     try:
-        analysis = analyze_time_series(series["dates"], series["values_mm"])
+        analysis = analyze_time_series(series["dates"], series["values_mm"], line_of_sight=line_of_sight)
     except Exception:
         logger.warning("Time series analysis failed", exc_info=True)
         analysis = None

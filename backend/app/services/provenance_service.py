@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.config import APP_VERSION
-from insar_core.adapters.hyp3 import DEFAULT_INSAR_PARAMETERS
+from insar_core.adapters.hyp3 import DEFAULT_BURST_PARAMETERS, DEFAULT_INSAR_PARAMETERS
 from insar_core.pipeline.provenance import software_versions
 from insar_core.pipeline.mintpy_timeseries import locate_velocity_file, read_reference_point
 
@@ -27,13 +27,23 @@ SCHEMA = 1
 FILE_NAME = "provenance.json"
 
 
-def batch_parameters(project, max_temporal_neighbors: int) -> dict:
-    """What a batch submitted for `project` right now is produced with."""
+def batch_parameters(project, max_temporal_neighbors: int, pair_config=None) -> dict:
+    """What a batch submitted for `project` right now is produced with.
+
+    `pair_config` (insar_core PairPlanConfig) is how the pairs were chosen when that was not the
+    plain "next N acquisitions" rule."""
+    pairing = {"method": "temporal_neighbors", "max_temporal_neighbors": max_temporal_neighbors}
+    if pair_config is not None and pair_config.strategy == "baseline":
+        pairing = {"method": "baseline_network", **pair_config.as_record()}
+    elif pair_config is not None:
+        pairing["long_pairs_days"] = [int(d) for d in pair_config.long_pairs_days]
+        pairing["calibration_pair"] = bool(pair_config.calibration_pair)
+    burst = getattr(project, "engine", None) == "hyp3_burst"
     return {
         "schema": SCHEMA,
-        "processor": "HyP3 INSAR_GAMMA",
-        "hyp3": dict(DEFAULT_INSAR_PARAMETERS),
-        "pairing": {"method": "temporal_neighbors", "max_temporal_neighbors": max_temporal_neighbors},
+        "processor": "HyP3 INSAR_ISCE_BURST / INSAR_ISCE_MULTI_BURST" if burst else "HyP3 INSAR_GAMMA",
+        "hyp3": dict(DEFAULT_BURST_PARAMETERS if burst else DEFAULT_INSAR_PARAMETERS),
+        "pairing": pairing,
         "search": {
             "track_number": project.track_number,
             "flight_direction": project.flight_direction,
@@ -63,7 +73,20 @@ def project_context(db, project) -> dict:
         .order_by(Job.reference_date, Job.secondary_date)
         .all()
     )
+    from insar_core.adapters.nisar import granules_on_disk
+    from insar_core.engines import get_engine
+
+    try:
+        engine = get_engine(project.engine).info
+        engine_record = {"id": engine.id, "label": engine.label, "sensor": engine.sensor, "band": engine.band}
+    except KeyError:
+        engine_record = {"id": project.engine}
+    nisar = {}
+    if engine_record["id"] == "nisar_gunw" and project.storage_path:
+        nisar = {"nisar_granules": granules_on_disk(Path(project.storage_path))}
     return {
+        **nisar,
+        "engine": engine_record,
         "project": {
             "id": project.id,
             "name": project.name,

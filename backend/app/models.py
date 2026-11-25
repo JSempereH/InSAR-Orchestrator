@@ -38,6 +38,23 @@ class Credential(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class Decomposition(Base):
+    """Vertical and east-west velocity from an ascending and a descending project of the same area.
+
+    The products are files in `folder`; the row says which two projects they came from and keeps the summary of how they
+    were made, so the list can be shown without opening the files."""
+    __tablename__ = "decompositions"
+
+    id = Column(String, primary_key=True, default=gen_uuid)
+    name = Column(String, nullable=False)
+    ascending_project_id = Column(String, nullable=False)
+    descending_project_id = Column(String, nullable=False)
+    reference = Column(JSON, nullable=True)         # {"lat", "lon"} the two maps are made to read zero at
+    folder = Column(String, nullable=False)
+    summary = Column(JSON, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class EGMSDownload(Base):
     """A completed (or in-progress) EGMS product download session for one AOI.
 
@@ -87,6 +104,10 @@ class Project(Base):
     date_start = Column(String, nullable=True)          # ISO date
     date_end = Column(String, nullable=True)
     max_temporal_neighbors = Column(Integer, default=3)
+
+    # Which source of interferograms the project uses (see insar_core.engines):
+    # "hyp3_gamma" (Sentinel-1 through HyP3) or "nisar_gunw" (NASA's ready-made NISAR products).
+    engine = Column(String, nullable=False, default="hyp3_gamma", server_default="hyp3_gamma")
 
     # Resolved absolute directory for this project's downloads.
     # NULL means "use the app-wide default (settings.downloads_dir)".

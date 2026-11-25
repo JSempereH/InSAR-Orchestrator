@@ -215,14 +215,24 @@ def test_run_requires_a_destination(client, fake_rclone):
     assert client.post("/api/backup/run").status_code == 422
 
 
-def test_run_now_starts_a_backup_in_the_background(client, fake_rclone, project_folder, tmp_path):
+@pytest.fixture()
+def fresh_backup_config():
+    """The backup config is one row shared by every test: forget what earlier tests recorded in it."""
+    db = SessionLocal()
+    config = backup_service.get_config(db)
+    config.last_run_at, config.last_status, config.last_message = None, None, None
+    db.commit()
+    db.close()
+
+
+def test_run_now_starts_a_backup_in_the_background(client, fake_rclone, project_folder, tmp_path, fresh_backup_config):
     import time
 
     dest = tmp_path / "disk"
     client.put("/api/backup/config", json={"destination": str(dest), "enabled": False})
     assert client.post("/api/backup/run").status_code == 202
 
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 120   # every project the other tests left in the shared database is copied too
     while time.monotonic() < deadline:
         state = client.get("/api/backup").json()
         if not state["state"]["running"] and state["config"]["last_status"]:
@@ -232,12 +242,8 @@ def test_run_now_starts_a_backup_in_the_background(client, fake_rclone, project_
     assert (dest / "database").is_dir()
 
 
-def test_scheduler_tick_runs_only_when_due(client, fake_rclone, project_folder, tmp_path):
+def test_scheduler_tick_runs_only_when_due(client, fake_rclone, project_folder, tmp_path, fresh_backup_config):
     dest = tmp_path / "disk"
-    db = SessionLocal()
-    backup_service.get_config(db).last_run_at = None  # the config row is shared with earlier tests
-    db.commit()
-    db.close()
     client.put("/api/backup/config", json={"destination": str(dest), "enabled": False})
     assert backup_service.run_if_due() is False  # disabled
 

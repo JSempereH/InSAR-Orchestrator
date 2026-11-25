@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import Optional
 
 from insar_core.adapters.hyp3 import DEFAULT_INSAR_PARAMETERS
@@ -72,6 +73,47 @@ def _adoptable_jobs(db, adapter, job_name: str) -> dict[Pair, object]:
     return found
 
 
+# HyP3 answers a submission with a 5xx now and then when ASF's services are slow, and the same pair goes through a minute
+# later. A pair is tried this many times, waiting a little longer before each new attempt.
+_ATTEMPTS = 3
+_RETRY_WAIT_S = (10.0, 30.0)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """A failure that says nothing about the pair itself: HyP3 or the network having a bad moment."""
+    import requests
+    from hyp3_sdk.exceptions import ServerError
+
+    return isinstance(exc, (ServerError, requests.ConnectionError, requests.Timeout))
+
+
+def _submit_pair(db, adapter, ref: str, sec: str, job_name: str, hyp3_parameters: dict):
+    """Submit one pair, trying again after a transient failure. Returns the submitted job, or None when it gave up.
+
+    A request can reach HyP3 even though the answer never came back, and sending it again would spend the credits twice.
+    So before each new attempt HyP3 is asked whether the job exists, and if it exists it is adopted. When that question
+    cannot be answered either, the pair is given up (it is offered again by "Update") rather than risked."""
+    for attempt in range(_ATTEMPTS):
+        try:
+            return adapter.submit_pair(ref, sec, name=job_name, **hyp3_parameters)
+        except Exception as exc:
+            if not _is_transient(exc) or attempt == _ATTEMPTS - 1:
+                logger.exception("Submission of pair (%s, %s) failed", ref, sec)
+                return None
+            wait = _RETRY_WAIT_S[min(attempt, len(_RETRY_WAIT_S) - 1)]
+            logger.warning("HyP3 failed on pair (%s, %s): %s. Looking for it and trying again in %.0f s", ref, sec, exc, wait)
+            time.sleep(wait)
+            try:
+                found = _adoptable_jobs(db, adapter, job_name).get((ref, sec))
+            except Exception:
+                logger.exception("Could not ask HyP3 whether pair (%s, %s) exists, not sending it again", ref, sec)
+                return None
+            if found is not None:
+                logger.info("HyP3 had accepted pair (%s, %s) after all: adopting job %s", ref, sec, found.hyp3_job_id)
+                return found
+    return None
+
+
 def _run(
     batch_id: str,
     pairs: list[Pair],
@@ -110,10 +152,9 @@ def _run(
             if submitted is not None:
                 logger.info("Batch %s: adopting existing HyP3 job %s", batch_id, submitted.hyp3_job_id)
             else:
-                try:
-                    submitted = adapter.submit_pair(ref, sec, name=job_name, **hyp3_parameters)
-                except Exception:
-                    logger.exception("Batch %s: failed to submit pair (%s, %s)", batch_id, ref, sec)
+                submitted = _submit_pair(db, adapter, ref, sec, job_name, hyp3_parameters)
+                if submitted is None:
+                    logger.error("Batch %s: failed to submit pair (%s, %s)", batch_id, ref, sec)
                     continue
             _add_job(db, batch_id, submitted)
     except Exception:

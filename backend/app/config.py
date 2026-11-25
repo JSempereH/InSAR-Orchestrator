@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # On start, resume batches whose submission was cut short, queue downloads that
     # never ran and restart MintPy runs that were interrupted. Tests switch it off.
     recover_on_startup: bool = True
+    # Poll HyP3 for job status and credits and run scheduled backups while the app is up.
+    # Tests switch it off: each client start and stop would otherwise wait on those loops.
+    background_tasks: bool = True
 
     class Config:
         env_file = ".env"

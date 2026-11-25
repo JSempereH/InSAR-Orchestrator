@@ -21,7 +21,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from insar_core.analysis import fading_correction, unwrap_correction
+from insar_core.engines import get_engine
 from insar_core.pipeline.mintpy_adapter import MintPyAdapter, era5_source, find_smallbaseline
+from insar_core.pipeline import mintpy_export
+from insar_core.pipeline.mintpy_qc import compute_qc
+from insar_core.pipeline import mask_refinement
+from insar_core.pipeline.mintpy_options import (
+    FADING_KEY, MASK_CLOSURES_KEY, MASK_COHERENCE_KEY, options_for, reference_option, split_app_options, validate_options,
+)
 from insar_core.pipeline.mintpy_timeseries import (
     locate_timeseries_file, locate_velocity_file, read_point_time_series, read_reference_point,
     read_velocity_points,
@@ -30,7 +38,7 @@ from insar_core.pipeline.mintpy_timeseries import (
 from insar_core.pipeline.mintpy_adapter import _MIN_MARGIN_DEG, _SUBSET_MARGIN_FRACTION
 from insar_core.pipeline.provenance import mintpy_effective_options, parse_mintpy_options, software_versions
 
-from app.services import provenance_service
+from app.services import provenance_service, validation_service
 from app.services.series_analysis import with_analysis
 
 logger = logging.getLogger(__name__)
@@ -65,6 +73,13 @@ class MintPyRunState:
     warnings: list[str] = field(default_factory=list)
     # Where the ERA5 weather files came from: "arco", "cds" or None (no correction).
     era5_source: Optional[str] = None
+    # What the person asked for beyond the defaults: validated `mintpy.*` options and, when
+    # they picked one, the reference point {"lat", "lon"}. Kept so a run restarted after an
+    # interruption repeats the same request.
+    options: dict = field(default_factory=dict)
+    reference: Optional[dict] = None
+    # Which source made the interferograms (insar_core.engines); decides how they are prepared and loaded.
+    engine_id: str = "hyp3_gamma"
 
 
 def mintpy_available() -> bool:
@@ -257,12 +272,27 @@ def start_run(
     geometry: Optional[dict] = None,
     context: Optional[dict] = None,
     attempt: int = 1,
+    options: Optional[dict] = None,
+    reference: Optional[dict] = None,
+    engine_id: str = "hyp3_gamma",
 ) -> dict:
     """Start a MintPy run in the background.
 
     `context` (the project, its batches and pairs; see provenance_service) is
     saved with the run in the project's provenance.json. `attempt` counts automatic
-    restarts after an interruption and is 1 for a run someone asked for."""
+    restarts after an interruption and is 1 for a run someone asked for. `options`
+    ({mintpy key: value}, see insar_core.pipeline.mintpy_options) and `reference`
+    ({"lat", "lon"}) are what the person chose; a bad value is refused here, before
+    anything starts."""
+    try:
+        engine = get_engine(engine_id)
+        checked_options = validate_options(options, engine.info.id)
+        reference_option(reference)
+    except (ValueError, KeyError) as exc:
+        raise RuntimeError(str(exc).strip("'\"")) from exc
+    unavailable = engine.availability()
+    if not unavailable.ok:
+        raise RuntimeError(unavailable.reason)
     with _lock:
         existing = _runs.get(project_id)
         if existing is not None and existing.status == "RUNNING":
@@ -272,13 +302,14 @@ def start_run(
                 "smallbaselineApp.py was not found on PATH. Install MintPy on this "
                 "machine (pip install mintpy) to run SBAS analysis."
             )
-        if not downloads_dir.is_dir() or (
-            not any(downloads_dir.glob("*.zip")) and not any(p.is_dir() for p in downloads_dir.iterdir())
-        ):
+        if not engine.has_inputs(downloads_dir):
             raise RuntimeError(f"No downloaded interferograms found in {downloads_dir}")
 
         work_dir = downloads_dir / "mintpy"
-        state = MintPyRunState(project_id=project_id, work_dir=str(work_dir), attempt=attempt)
+        state = MintPyRunState(
+            project_id=project_id, work_dir=str(work_dir), attempt=attempt,
+            options=checked_options, reference=dict(reference) if reference else None, engine_id=engine.info.id,
+        )
         _runs[project_id] = state
 
     thread = threading.Thread(
@@ -286,6 +317,79 @@ def start_run(
     )
     thread.start()
     return get_status(project_id, downloads_dir)
+
+
+def get_quality(downloads_dir: Path) -> dict:
+    """Quality checks for this project's latest MintPy results, read from the files on disk."""
+    work_dir = downloads_dir / "mintpy"
+    if not (work_dir / "velocity.h5").exists():
+        raise RuntimeError("There are no MintPy results to check yet")
+    return compute_qc(work_dir)
+
+
+def build_report(downloads_dir: Path, provenance: Optional[dict] = None) -> str:
+    """The report of this project's latest MintPy results: what they are, how they were made, how far to trust them.
+
+    One self-contained HTML document (see insar_core.pipeline.report). The validations are included
+    only while they describe the current results: one made before MintPy ran again is left out."""
+    from insar_core.pipeline import report
+
+    work_dir = downloads_dir / "mintpy"
+    if not (work_dir / "velocity.h5").exists():
+        raise RuntimeError("There are no MintPy results to report on yet")
+    validation = {}
+    for kind in ("egms", "gnss"):
+        result = validation_service._saved(downloads_dir, kind)
+        newest = validation_service._results_mtime(downloads_dir)
+        if result and not (newest is not None and newest > float(result.get("mintpy_results_mtime") or 0) + 1.0):
+            validation[kind] = result
+    try:
+        return report.build_report(work_dir, provenance=provenance, validation=validation)
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def export_results(
+    downloads_dir: Path, fmt: str, layer: str = "velocity", masked: bool = True, series: bool = True,
+) -> Path:
+    """Write this project's MintPy results as `fmt` and return the file.
+
+    Files go to `mintpy/exports/` and are reused until MintPy writes new results, so asking for
+    the same export twice does not repeat the work (a GeoPackage of every pixel takes a while)."""
+    work_dir = downloads_dir / "mintpy"
+    if not (work_dir / "velocity.h5").exists():
+        raise RuntimeError("There are no MintPy results to export yet")
+    folder = work_dir / "exports"
+    try:
+        expected = mintpy_export.export_path(folder, fmt, layer, masked, series)
+        calibrated = layer in ("velocity_calibrated", "velocity_std_calibrated")
+        # A calibrated layer depends on the last validation too, so it is written again each time (it is one small file).
+        # the mask can change after the velocity was written (the stricter mask of this app), and a masked export with it
+        newest = max(p.stat().st_mtime for p in (work_dir / "velocity.h5", work_dir / "maskTempCoh.h5") if p.exists())
+        if not calibrated and expected.exists() and expected.stat().st_mtime >= newest:
+            return expected
+        corrections = validation_service.corrections(downloads_dir) if calibrated else None
+        return mintpy_export.export(work_dir, folder, fmt, layer=layer, masked=masked, include_series=series,
+                                    corrections=corrections)
+    except (mintpy_export.ExportError, FileNotFoundError, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def describe_options(downloads_dir: Path, engine_id: str = "hyp3_gamma") -> dict:
+    """The options the app lets a person change, with each default, and what the last run used."""
+    engine = get_engine(engine_id)
+    defaults = {**(mintpy_effective_options("") or {}), **engine.default_mintpy_options()}
+    defaults[_UNWRAP_KEY] = "auto"            # the app's own choice: corrected when the network allows it
+    available = options_for(engine.info.id)
+    last = (provenance_service.read_run_record(downloads_dir) or {}).get("mintpy") or {}
+    used = parse_mintpy_options(last.get("custom_config") or "")
+    listed = [{k: v for k, v in option.items() if k != "engines"} | {"default": defaults.get(option["key"], "auto")} for option in available]
+    reference = used.get("mintpy.reference.lalo")
+    return {
+        "options": listed,
+        "last_run": {key: used[key] for key in (o["key"] for o in available) if key in used},
+        "last_reference": reference if reference not in (None, "auto") else None,
+    }
 
 
 def get_time_series(downloads_dir: Path, lat: float, lon: float) -> dict:
@@ -297,7 +401,7 @@ def get_time_series(downloads_dir: Path, lat: float, lon: float) -> dict:
     backend restart as long as the files are still there."""
     work_dir = downloads_dir / "mintpy"
     try:
-        return with_analysis(read_point_time_series(work_dir, lat, lon))
+        return with_analysis(read_point_time_series(work_dir, lat, lon), line_of_sight=True)
     except (FileNotFoundError, ValueError) as exc:
         raise RuntimeError(str(exc)) from exc
 
@@ -347,7 +451,7 @@ _ERA5_SOURCES = {
 }
 
 
-def _troposphere_options() -> tuple[dict[str, str], list[str], Optional[str]]:
+def _troposphere_options(user_options: Optional[dict] = None) -> tuple[dict[str, str], list[str], Optional[str]]:
     """Config overrides, warnings and the weather data source that follow from what this machine can do.
 
     MintPy's default troposphere correction is PyAPS with ERA5, which downloads one
@@ -355,8 +459,12 @@ def _troposphere_options() -> tuple[dict[str, str], list[str], Optional[str]]:
     stops with a division by zero (measured on a real run: it fails after the inversion,
     so the work done so far is wasted and the message does not say why). So the
     correction is turned off explicitly, and that is stated in the run's warnings,
-    its provenance record and the status the UI shows, never silently."""
-    defaults = mintpy_effective_options("")
+    its provenance record and the status the UI shows, never silently.
+
+    `user_options` are the person's own choices: with another method (or none) there is
+    no weather data to fetch, so nothing is checked or changed."""
+    chosen = "".join(f"{key} = {value}\n" for key, value in (user_options or {}).items())
+    defaults = mintpy_effective_options(chosen)
     if not defaults or defaults.get("mintpy.troposphericDelay.method") != "pyaps":
         return {}, [], None
     source = era5_source()
@@ -447,8 +555,19 @@ def _record_run(
         },
         "interferograms": {"count": len(names), "names": names},
         "results": _result_files(work_dir),
+        # Quality checks on the finished run, so the record says how far the result can be trusted.
+        "quality": _quality(work_dir) if run["status"] == "SUCCEEDED" else None,
     }
     provenance_service.write_run_record(downloads_dir, record)
+
+
+def _quality(work_dir: Path) -> Optional[dict]:
+    try:
+        report = compute_qc(work_dir)
+    except Exception:
+        logger.warning("Could not compute the quality checks for %s", work_dir, exc_info=True)
+        return None
+    return {"status": report["status"], "checks": report["checks"], "metrics": report["metrics"]}
 
 
 def _run_stage(
@@ -457,7 +576,8 @@ def _run_stage(
 ) -> int:
     """Run MintPy between two steps and wait for it; returns its exit code."""
     process = adapter.start_full_pipeline(config_path=config_path, start_step=start_step, end_step=end_step)
-    _write_marker(work_dir, project_id=project_id, started_at=started_at, attempt=attempt, pid=process.pid)
+    _write_marker(work_dir, project_id=project_id, started_at=started_at, attempt=attempt, pid=process.pid,
+                  **_requested(project_id))
     with _lock:
         state = _runs[project_id]
         state.process = process
@@ -470,6 +590,87 @@ def _run_stage(
     return process.wait()
 
 
+_UNWRAP_KEY = "mintpy.unwrapError.method"
+
+
+def _with_option(text: str, key: str, value: str) -> str:
+    """The config `text` with `key` set to `value`, replacing its line or adding one."""
+    import re
+
+    line = f"{key.ljust(26)} = {value}"
+    changed, count = re.subn(rf"^{re.escape(key)}\s*=[^#\n]*", line + "  ", text, flags=re.MULTILINE)
+    return changed if count else text.rstrip("\n") + "\n" + line + "\n"
+
+
+def _correct_unwrapping(work_dir: Path, config_path: Path, explicit: bool) -> Optional[str]:
+    """Correct the unwrapping errors of the loaded stack and point MintPy's inversion at the corrected phases.
+
+    Returns a sentence for the person when the correction they asked for could not be made. When it
+    was left to the app (`explicit` False) and the network does not allow it, nothing is said: the
+    run goes on with the phases as they are, as it did before this step existed."""
+    try:
+        summary = unwrap_correction.correct_stack(work_dir)
+    except unwrap_correction.UnwrapCorrectionError as exc:
+        return f"The unwrapping errors were not corrected. {exc}" if explicit else None
+    except Exception:
+        logger.exception("Unwrapping error correction failed in %s", work_dir)
+        return "The unwrapping errors were not corrected: the correction stopped with an error (see the backend log)."
+    config_path.write_text(_with_option(config_path.read_text(), _UNWRAP_KEY, "phase_closure"))
+    logger.info("Unwrapping correction in %s: %s", work_dir, summary["pixels"])
+    return None
+
+
+def _correct_fading(work_dir: Path, config_path: Path) -> Optional[str]:
+    """Remove the fading bias from the stack and point MintPy's inversion at the corrected phases.
+
+    Returns a sentence for the person when it could not be done (the run goes on without it)."""
+    source = fading_correction.OUTPUT_DATASET if (work_dir / unwrap_correction.SUMMARY_FILE).exists() else "unwrapPhase"
+    try:
+        summary = fading_correction.correct_stack(work_dir, source=source)
+    except fading_correction.FadingCorrectionError as exc:
+        return f"The fading bias was not corrected. {exc}"
+    except Exception:
+        logger.exception("Fading bias correction failed in %s", work_dir)
+        return "The fading bias was not corrected: the correction stopped with an error (see the backend log)."
+    config_path.write_text(_with_option(config_path.read_text(), _UNWRAP_KEY, "phase_closure"))
+    logger.info("Fading bias correction in %s: a1 %.2f, a2 %.2f", work_dir, summary["a1"], summary["a2"])
+    return None
+
+
+def _refine_mask(work_dir: Path, app_options: dict[str, str]) -> Optional[str]:
+    """Apply the stricter mask to a finished run. Returns a sentence when what was asked could not be done."""
+    closures = app_options.get(MASK_CLOSURES_KEY, "auto")
+    coherence = app_options.get(MASK_COHERENCE_KEY)
+    if closures == "auto":
+        # With long interferograms in the network, the pixels whose short triplets are noisy are constrained by them and
+        # come out as good as the rest (measured against EGMS), so dropping them only loses pixels: left to the person.
+        account = unwrap_correction.read_summary(work_dir) or {}
+        if account.get("interferograms_in_the_stack", 0) > account.get("interferograms", 0):
+            closures = "no"
+    if closures == "no" and coherence is None:
+        return None
+    if not (work_dir / mask_refinement.MASK_FILE).exists():
+        return None
+    corrected = (work_dir / unwrap_correction.COUNT_FILE).exists()
+    if coherence is None and not corrected:
+        # nothing to mask by: the mask stays MintPy's, and no account of a refinement is written
+        return ("Pixels whose triplets do not close were not dropped: that needs the unwrapping error correction, which "
+                "did not run.") if closures == "yes" else None
+    try:
+        mask_refinement.refine(work_dir, drop_unreadable_closures=closures != "no" and corrected,
+                               min_mean_coherence=float(coherence) if coherence is not None else None)
+    except (mask_refinement.MaskError, OSError, ValueError) as exc:
+        return f"The stricter mask was not applied. {exc}"
+    return None
+
+
+def _requested(project_id: str) -> dict:
+    """What the person asked for, in the form the run marker keeps it."""
+    with _lock:
+        state = _runs.get(project_id)
+        return {"options": dict(state.options), "reference": state.reference, "engine_id": state.engine_id} if state else {}
+
+
 def _user_chose_reference(custom_text: str) -> bool:
     """True when the user's own options fix the reference pixel, which is then left alone."""
     options = parse_mintpy_options(custom_text)
@@ -480,19 +681,37 @@ def _run(
     project_id: str, downloads_dir: Path, work_dir: Path, geometry: Optional[dict],
     context: Optional[dict] = None,
 ) -> None:
-    adapter = MintPyAdapter(downloads_dir=downloads_dir, work_dir=work_dir)
+    with _lock:
+        engine_id = _runs[project_id].engine_id
+    adapter = MintPyAdapter(downloads_dir=downloads_dir, work_dir=work_dir, engine=get_engine(engine_id))
     with _lock:
         attempt = _runs[project_id].attempt
         started_at = _runs[project_id].started_at
-    _write_marker(work_dir, project_id=project_id, started_at=started_at, attempt=attempt, pid=None)
+    _write_marker(work_dir, project_id=project_id, started_at=started_at, attempt=attempt, pid=None,
+                  **_requested(project_id))
     # The config as this app wrote it. MintPy later overwrites that file with its own
     # full template (every option, most still "auto"), so it has to be read now.
     custom_text = ""
     try:
-        adapter.unzip_all(geometry=geometry)
+        adapter.prepare_inputs(geometry=geometry)
         if _cancel_requested(project_id):
             return
-        extra_options, warnings, weather_source = _troposphere_options()
+        with _lock:
+            user_options = dict(_runs[project_id].options)
+            user_reference = _runs[project_id].reference
+        user_options, app_options = split_app_options(user_options)
+        tropo_options, warnings, weather_source = _troposphere_options(user_options)
+        # The checks on this machine come last so that they win over a person's choice
+        # that cannot work here (ERA5 asked for with no weather data source).
+        extra_options = {**adapter.engine.default_mintpy_options(), **user_options, **reference_option(user_reference), **tropo_options}
+        # The unwrapping errors are corrected by this app between two MintPy stages (see _correct_unwrapping),
+        # not by MintPy's own step, which needs layers the HyP3 products do not have. MintPy is told "no" until
+        # the corrected phases exist.
+        unwrap_method = extra_options.get(_UNWRAP_KEY, "auto")
+        extra_options[_UNWRAP_KEY] = "no"
+        for name in (unwrap_correction.SUMMARY_FILE, unwrap_correction.COUNT_FILE, fading_correction.SUMMARY_FILE):
+            (work_dir / name).unlink(missing_ok=True)
+        mask_refinement.restore(work_dir)
         adapter.era5_source = weather_source
         with _lock:
             _runs[project_id].warnings = warnings
@@ -514,12 +733,35 @@ def _run(
                 if pinned:
                     logger.info("MintPy for project %s: reference pixel moved %s -> %s",
                                 project_id, pinned["previous"], pinned["chosen"])
-            return_code = stage(start_step="quick_overview")
-        if return_code != 0 and not _cancel_requested(project_id) and _stopped_by_clean_triplets(work_dir):
-            logger.info("MintPy for project %s: resuming after the skipped triplet plot", project_id)
-            with _lock:
-                _runs[project_id].warnings = [*_runs[project_id].warnings, _CLEAN_TRIPLETS_NOTE]
-            return_code = stage(start_step="correct_unwrap_error")
+            return_code = stage(start_step="quick_overview", end_step="quick_overview")
+            if return_code != 0 and not _cancel_requested(project_id) and _stopped_by_clean_triplets(work_dir):
+                logger.info("MintPy for project %s: going on after the skipped triplet plot", project_id)
+                with _lock:
+                    _runs[project_id].warnings = [*_runs[project_id].warnings, _CLEAN_TRIPLETS_NOTE]
+                return_code = 0
+        if return_code == 0 and not _cancel_requested(project_id):
+            if unwrap_method != "no":
+                note = _correct_unwrapping(work_dir, Path(config_path), explicit=unwrap_method != "auto")
+                if note:
+                    with _lock:
+                        _runs[project_id].warnings = [*_runs[project_id].warnings, note]
+                elif (work_dir / unwrap_correction.SUMMARY_FILE).exists():
+                    custom_text = _with_option(custom_text, _UNWRAP_KEY, "phase_closure")
+            if app_options.get(FADING_KEY) == "yes" and not _cancel_requested(project_id):
+                note = _correct_fading(work_dir, Path(config_path))
+                if note:
+                    with _lock:
+                        _runs[project_id].warnings = [*_runs[project_id].warnings, note]
+                elif (work_dir / fading_correction.SUMMARY_FILE).exists():
+                    custom_text = _with_option(custom_text, _UNWRAP_KEY, "phase_closure")
+            if not _cancel_requested(project_id):
+                # MintPy's own correct_unwrap_error step is passed over: the correction is the one above
+                return_code = stage(start_step="invert_network")
+        if return_code == 0 and not _cancel_requested(project_id):
+            note = _refine_mask(work_dir, app_options)
+            if note:
+                with _lock:
+                    _runs[project_id].warnings = [*_runs[project_id].warnings, note]
         with _lock:
             state = _runs[project_id]
             if state.status == "CANCELLED":
@@ -610,6 +852,8 @@ def recover_interrupted_runs() -> dict:
                 start_run(
                     project.id, folder, geometry=project.geometry,
                     context=provenance_service.project_context(db, project), attempt=attempt + 1,
+                    options=marker.get("options"), reference=marker.get("reference"),
+                    engine_id=marker.get("engine_id") or project.engine or "hyp3_gamma",
                 )
                 outcome["restarted"].append(project.id)
             except RuntimeError:
