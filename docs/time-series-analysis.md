@@ -27,17 +27,17 @@ The series is fitted with five models and the simplest adequate one wins:
 | Pattern | Model | Labels you can see |
 |---|---|---|
 | Stable | a constant | *Stable* |
-| Linear | a straight line | *Steady subsidence*, *Steady uplift* |
+| Linear | a straight line | *Steady subsidence*, *Steady uplift* (vertical series); *Steady motion away from the satellite*, *Steady motion towards the satellite* (line of sight) |
 | Quadratic | a parabola (velocity changes gradually) | *Accelerating*, *Decelerating*, *Trend reversal*, *Onset of ...*, *Stabilising* |
 | Change in trend | two straight lines joined at one date | the same labels as the quadratic pattern, with the date |
 | Abrupt shift | one straight line with a jump at one date | *Abrupt shift* |
 
-Negative velocity is subsidence (the ground moves away from the satellite) and positive is uplift.
+The words depend on what the series measures. A **vertical** series says subsidence (negative) and uplift (positive). A **line-of-sight** series, the kind every single track gives, says *motion away from the satellite* and *motion towards the satellite*: a line of sight mixes vertical and horizontal motion, so calling it subsidence would claim more than is known. To get vertical motion, combine an ascending and a descending track (see [Vertical and east-west](vertical-east-west.md)).
 
 For the two patterns where the velocity changes, the label compares the velocity before and after. A velocity smaller than 0.5 mm/yr, or smaller than its own 95% uncertainty if that is larger, counts as "no motion":
 
 - *Trend reversal*: both velocities are real and have opposite signs.
-- *Onset of subsidence / uplift*: it was stable and now it moves.
+- *Onset of subsidence / uplift* (or of motion away from / towards the satellite): it was stable and now it moves.
 - *Stabilising*: it was moving and now it is stable.
 - *Accelerating / Decelerating*: same direction, faster or slower.
 - *Non-linear (small)*: the variation is within the noise.
@@ -53,7 +53,7 @@ This follows the classification idea of Berti et al. (2013), who sort persistent
 ## How the numbers are computed
 
 - **Velocity.** Ordinary least squares on a single straight line, in mm/yr. When the pattern is not linear this is the *mean* velocity over the record, which is why the card is then labelled "Mean velocity".
-- **Uncertainty.** The standard error of the slope, enlarged because consecutive InSAR observations are not independent: the effective number of observations is `n (1 - r) / (1 + r)`, where `r` is the lag-1 autocorrelation of the residuals (only positive values widen the interval). The window shows a 95% interval (1.96 standard errors).
+- **Uncertainty.** The standard error of the slope, enlarged because consecutive InSAR observations are not independent: the effective number of observations is `n (1 - r) / (1 + r)`, where `r` is the lag-1 autocorrelation of the residuals (only positive values widen the interval). The window shows a 95% interval that uses Student's t with that effective number of observations, so a short or strongly autocorrelated series gets a wider interval than 1.96 standard errors. When the record spans at least 1.5 years, an annual cycle is fitted together with the trend, so a seasonal signal is not mistaken for velocity.
 - **Robust slope.** The median of the slopes between all pairs of dates (Theil-Sen). One bad observation barely moves it. Series longer than 600 dates are thinned evenly for this step.
 - **Mann-Kendall.** A rank test for whether the series tends to rise or fall. It does not assume a straight line. A small p-value (below 0.05) means a monotonic tendency exists.
 - **Net change.** The fitted trend at the last date minus the fitted trend at the first date, without the seasonal part.

@@ -22,7 +22,11 @@ const PAGES = [
   { src: 'credentials.md', out: 'credentials.html', title: 'Credentials' },
   { src: 'get-data.md', out: 'get-data.html', title: 'Get data' },
   { src: 'backup.md', out: 'backup.html', title: 'Your files' },
+  { src: 'check-and-export.md', out: 'check-and-export.html', title: 'Check and export' },
+  { src: 'vertical-east-west.md', out: 'vertical-east-west.html', title: 'Vertical and east-west' },
   { src: 'time-series-analysis.md', out: 'time-series-analysis.html', title: 'Reading a time series' },
+  { src: 'limits.md', out: 'limits.html', title: 'Known limits' },
+  { src: 'validation.md', out: 'validation.html', title: 'Validating the chain' },
   { src: 'deploy.md', out: 'deploy.html', title: 'Deploy' },
 ];
 

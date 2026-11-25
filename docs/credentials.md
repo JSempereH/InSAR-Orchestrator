@@ -6,7 +6,7 @@ Open **Settings** and fill in only what you will use.
 
 | For | Enter | Get it from |
 |---|---|---|
-| ASF / HyP3 | Earthdata username and password | A free account at [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov/users/new) |
+| ASF / HyP3 / NISAR | Earthdata username and password | A free account at [urs.earthdata.nasa.gov](https://urs.earthdata.nasa.gov/users/new) |
 | EGMS | The full JSON key | A service-account key from your account at [land.copernicus.eu](https://land.copernicus.eu) |
 | ERA5 correction | Nothing. The weather data comes from a public archive | Optional fallback: a `~/.cdsapirc` file from a free account at [cds.climate.copernicus.eu](https://cds.climate.copernicus.eu) |
 

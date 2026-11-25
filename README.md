@@ -20,15 +20,19 @@ This tool is designed with research in mind. This is **not** a production tool, 
 ```
 InSAR-Orchestrator/
 ├── packages/insar_core/   # Core Python library (pip-installable)
-│   ├── adapters/          # ASF scene/track search, HyP3 job submission, EGMS product search
-│   ├── analysis/          # Time series pattern analysis (trend, change point, outliers)
+│   ├── adapters/          # ASF scene, burst and NISAR search, HyP3 job submission, EGMS products, NGL GNSS stations
+│   ├── analysis/          # Time series patterns, validation against EGMS and GNSS, calibration, vertical and east-west
+│   │                      # decomposition, unwrapping error correction, fading bias, precision with distance
 │   ├── models/            # Pure dataclasses: SARScene, AOI, Job, EGMS search params
-│   ├── pipeline/          # SBAS pair builder, orchestrator, MintPy adapter + time series reader, provenance record
+│   ├── pipeline/          # Pair planner, orchestrator, MintPy adapter and options, quality checks, stricter mask,
+│   │                      # exports, report, ERA5 and DEM access, provenance record
+│   ├── engines.py         # The sources of interferograms: HyP3 whole scenes, HyP3 bursts, NISAR GUNW
 │   ├── credentials.py     # Earthdata / EGMS credential resolution (explicit -> env vars -> ~/.netrc)
 │   └── net.py             # Shared HTTP download helper (retry with backoff, resume via Range)
 ├── backend/               # FastAPI REST API + WebSocket
 │   └── app/
-│       ├── routers/       # projects, batches, jobs, scenes, slc, egms, mintpy, storage, archive, backup, credentials
+│       ├── routers/       # projects, batches, jobs, scenes, slc, egms, nisar, engines, mintpy, validation, decomposition,
+│       │                  # storage, archive, backup, credentials
 │       ├── services/      # ASF/HyP3/EGMS integration, download queues, polling, restart recovery, rclone backup and archive, provenance, encryption
 │       ├── auth.py        # Optional APP_PASSWORD login
 │       └── backup.py      # Command line backup (python -m app.backup)
@@ -39,7 +43,9 @@ InSAR-Orchestrator/
 ```
 
 This repo is scoped to InSAR: draw an AOI, discover tracks, submit pairs to
-HyP3, monitor jobs, run MintPy SBAS on the results.
+HyP3 (whole scenes or bursts) or download NISAR interferograms, monitor jobs, run
+MintPy SBAS on the results, check them (quality checks, validation against EGMS
+and GNSS, a report of each result) and export them.
 
 ---
 
