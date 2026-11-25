@@ -87,7 +87,7 @@ export function DownloadsPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
       qc.invalidateQueries({ queryKey: ["project-download-summary"] });
     }
     lastSeenStatus.current = archiveState?.status;
-  }, [archiveState?.status]);
+  }, [archiveState?.status, qc]);
 
   const deleteEgmsMut = useMutation({
     mutationFn: ({ id, deleteFiles }: { id: string; deleteFiles: boolean }) => egmsApi.deleteDownload(id, deleteFiles),

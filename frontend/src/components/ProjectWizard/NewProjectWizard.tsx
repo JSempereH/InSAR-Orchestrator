@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useState } from "react";
-import { projectsApi, storageApi, TrackSummary } from "../../api/client";
+import { enginesApi, projectsApi, storageApi, TrackSummary } from "../../api/client";
 import { AOIMap } from "../Map/AOIMap";
 import { TrackPicker } from "../SceneSearch/TrackPicker";
 import { StorageTargetSelect } from "../StorageTargetSelect";
@@ -18,6 +18,12 @@ export function NewProjectWizard({ onDone }: { onDone: () => void }) {
   const [track, setTrack]           = useState<TrackSummary | null>(null);
   const [maxNeighbors, setMaxNeighbors] = useState(3);
   const [storageMountpoint, setStorageMountpoint] = useState<string>("");
+  const [engine, setEngine] = useState("hyp3_gamma");
+
+  const { data: engines } = useQuery({ queryKey: ["engines"], queryFn: enginesApi.list, staleTime: 60_000 });
+  const chosenEngine = engines?.find((e) => e.id === engine);
+  // engines whose products are downloaded as they are need no track search: the project is created at once
+  const nisar = chosenEngine?.acquisition === "ready_made";
 
   const { data: storageTargets } = useQuery({ queryKey: ["storage-targets"], queryFn: storageApi.targets });
 
@@ -64,6 +70,22 @@ export function NewProjectWizard({ onDone }: { onDone: () => void }) {
           <div className="card" style={{ padding: 20 }}>
             <h3 style={{ marginBottom: 16 }}>Project details</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 }}>
+              {engines && engines.length > 1 && (
+                <div className="field" style={{ gridColumn: "1 / -1" }}>
+                  <label htmlFor="project-engine">Source of interferograms</label>
+                  <select id="project-engine" className="input" value={engine} onChange={(e) => setEngine(e.target.value)}>
+                    {engines.map((e) => (
+                      <option key={e.id} value={e.id} disabled={!e.available}>{e.label}{e.available ? "" : " (not available here)"}</option>
+                    ))}
+                  </select>
+                  {chosenEngine && (
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                      {chosenEngine.description} {chosenEngine.costs_credits ? "It costs HyP3 credits." : "It costs no credits."}
+                      {!chosenEngine.available && ` ${chosenEngine.unavailable_reason}`}
+                    </span>
+                  )}
+                </div>
+              )}
               <div className="field" style={{ gridColumn: "1 / -1" }}>
                 <label>Project name *</label>
                 <input
@@ -103,14 +125,40 @@ export function NewProjectWizard({ onDone }: { onDone: () => void }) {
             )}
           </div>
 
-          <div style={{ display: "flex", justifyContent: "flex-end" }}>
-            <button
-              className="btn btn-primary"
-              disabled={!name || !geometry}
-              onClick={() => setStep(2)}
-            >
-              Next: find tracks →
-            </button>
+          {nisar && (
+            <div className="field" style={{ maxWidth: 340 }}>
+              <label>Storage destination</label>
+              <StorageTargetSelect targets={storageTargets} value={storageMountpoint} onChange={setStorageMountpoint} showTotal />
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                The files are large (a NISAR interferogram is about 2 GB, a coregistered Sentinel-1 image about 300 MB). They are saved here and this cannot be changed later.
+              </span>
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 12, alignItems: "center" }}>
+            {nisar ? (
+              <>
+                {createMut.isError && <span style={{ color: "var(--danger)", fontSize: 13 }}>Failed to create project. {String(createMut.error)}</span>}
+                <button
+                  className="btn btn-primary"
+                  disabled={!name || !geometry || !dateStart || !dateEnd || createMut.isPending}
+                  onClick={() => createMut.mutate({
+                    name, description: desc || undefined, geometry: geometry!, date_start: dateStart, date_end: dateEnd,
+                    engine, storage_mountpoint: storageMountpoint || undefined,
+                  })}
+                >
+                  {createMut.isPending ? "Creating…" : "Create project"}
+                </button>
+              </>
+            ) : (
+              <button
+                className="btn btn-primary"
+                disabled={!name || !geometry}
+                onClick={() => setStep(2)}
+              >
+                Next: find tracks →
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -210,6 +258,7 @@ export function NewProjectWizard({ onDone }: { onDone: () => void }) {
                   date_end: dateEnd,
                   max_temporal_neighbors: maxNeighbors,
                   storage_mountpoint: storageMountpoint || undefined,
+                  engine,
                 })
               }
             >

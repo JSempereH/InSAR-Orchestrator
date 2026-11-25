@@ -1,29 +1,23 @@
-import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { authApi } from "./api/client";
+import { createQueryClient } from "./queryClient";
 import { AuthGate } from "./components/AuthGate";
+import { useDialogs } from "./components/Dialogs";
 import { DashboardPage } from "./pages/Dashboard";
+import { DecompositionPage } from "./pages/Decomposition";
 import { GroundMotionPage } from "./pages/GroundMotion";
 import { DownloadsPage } from "./pages/Downloads";
 import { SettingsPage } from "./pages/Settings";
 import { ViewerPage } from "./pages/Viewer";
 import "./App.css";
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      // Without this, staleTime defaults to 0: every query refetches on
-      // every mount and window focus, even ones that already have their own
-      // explicit refetchInterval elsewhere for "this needs to be live."
-      // Most data here (projects, batches, credentials) doesn't change from
-      // second to second, so a short baseline avoids that redundant chatter
-      // without meaningfully delaying anything a user is actively waiting on.
-      staleTime: 10_000,
-    },
-  },
-});
+// Connected to the toasts by the App below.
+let reportMutationError: (message: string) => void = () => {};
 
-type Page = "dashboard" | "ground-motion" | "viewer" | "downloads" | "settings";
+const queryClient = createQueryClient((message) => reportMutationError(message));
+
+type Page = "dashboard" | "ground-motion" | "decomposition" | "viewer" | "downloads" | "settings";
 
 function NavIcon({ d }: { d: string }) {
   return (
@@ -36,6 +30,7 @@ function NavIcon({ d }: { d: string }) {
 const NAV: { id: Page; icon: string; label: string }[] = [
   { id: "dashboard",     icon: "M12 2 4 6v6c0 5 3.4 8.6 8 10 4.6-1.4 8-5 8-10V6l-8-4Zm0 6v8m-4-4h8", label: "ASF" },
   { id: "ground-motion", icon: "M3 17c3-8 6 4 9-3s6-6 9-8", label: "EGMS" },
+  { id: "decomposition", icon: "M12 3v18M3 12h18M12 3l-3 3m3-3 3 3m6 6-3-3m3 3-3 3M3 12l3-3m-3 3 3 3m6 6-3-3m3 3 3-3", label: "Combine" },
   { id: "viewer",        icon: "M9 3 3 6v15l6-3 6 3 6-3V3l-6 3-6-3Zm0 0v15m6-12v15", label: "Viewer" },
   { id: "downloads",     icon: "M12 3v12m0 0-4-4m4 4 4-4M4 20h16", label: "Downloads" },
   { id: "settings",      icon: "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0-13v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2m0-14-2 2M7 17l-2 2", label: "Settings" },
@@ -62,6 +57,12 @@ function App() {
   const [page, setPage] = useState<Page>("dashboard");
   // Dataset to preselect when the viewer opens from another page ("View on map").
   const [viewerTarget, setViewerTarget] = useState<string | null>(null);
+
+  const { toast } = useDialogs();
+  useEffect(() => {
+    reportMutationError = (message) => toast({ tone: "error", title: "That did not work", message });
+    return () => { reportMutationError = () => {}; };
+  }, [toast]);
 
   function openViewer(datasetId: string) {
     setViewerTarget(datasetId);
@@ -153,6 +154,7 @@ function App() {
         <main style={{ flex: 1, overflowY: "auto", background: "var(--bg)" }}>
           {page === "dashboard"      && <DashboardPage onOpenViewer={openViewer} />}
           {page === "ground-motion"  && <GroundMotionPage onGoToSettings={() => setPage("settings")} />}
+          {page === "decomposition"  && <DecompositionPage />}
           {page === "viewer"         && <ViewerPage key={viewerTarget ?? "none"} initialId={viewerTarget} onGoTo={setPage} />}
           {page === "downloads"      && <DownloadsPage onOpenViewer={openViewer} />}
           {page === "settings"       && <SettingsPage />}
