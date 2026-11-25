@@ -6,7 +6,7 @@
 # Podman or rootless Docker. See docs/deploy.md.
 
 # ── 1. Build the web app ─────────────────────────────────────────────────────
-FROM node:20-slim AS frontend
+FROM node:24-slim AS frontend
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci

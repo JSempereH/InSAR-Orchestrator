@@ -10,7 +10,7 @@ DOCS_PORT     ?= 8001
 .PHONY: help install backend frontend dev \
         test-backend test-insar-core test-all \
         docs docs-assets docs-site docs-serve docs-install \
-        lint docker-build docker-up docker-down backup-db clean
+        lint test-frontend benchmark docker-build docker-up docker-down backup-db clean
 
 help: ## Show this help
 	@echo "Available targets:"
@@ -40,7 +40,13 @@ test-backend: ## Run the backend test suite
 test-insar-core: ## Run the insar_core (shared) test suite
 	$(BACKEND_DIR)/.venv/bin/python -m pytest packages/insar_core/tests -q
 
-test-all: test-backend test-insar-core ## Run every test suite in this repo
+benchmark: ## Validate the processing chain on the real cases against EGMS and GNSS and compare with the saved baseline
+	cd $(BACKEND_DIR) && .venv/bin/python -m app.benchmark --baseline benchmark/baseline.json
+
+test-frontend: ## Run the frontend tests
+	npm test --prefix $(FRONTEND_DIR)
+
+test-all: test-backend test-insar-core test-frontend ## Run every test suite in this repo
 
 ## --- Docs -------------------------------------------------------------------
 # Screenshots come from the running app (started here if it is not), so the app
