@@ -59,12 +59,15 @@ def test_read_point_time_series_converts_meters_to_mm(tmp_path):
     _write_timeseries_h5(tmp_path / "timeseries.h5")
 
     # Pixel (1, 1) sits at lat = Y_FIRST + 1 * Y_STEP, lon = X_FIRST + 1 * X_STEP.
-    lat = _Y_FIRST + 1 * _Y_STEP
-    lon = _X_FIRST + 1 * _X_STEP
-
-    series = read_point_time_series(tmp_path, lat, lon)
-    assert series["dates"] == ["20200101", "20200107", "20200113"]
-    assert series["values_mm"] == pytest.approx([0.0, 1.0, 2.0])
+    # X_FIRST / Y_FIRST are the outer corner of the first pixel, so pixel (1, 1) spans
+    # 1 to 2 steps from it: anywhere inside must read that pixel, also near its far edge.
+    for inside in (1.5, 1.05, 1.95):
+        series = read_point_time_series(tmp_path, _Y_FIRST + inside * _Y_STEP, _X_FIRST + inside * _X_STEP)
+        assert series["dates"] == ["20200101", "20200107", "20200113"]
+        assert series["values_mm"] == pytest.approx([0.0, 1.0, 2.0])
+    # and just past the edge it is the next pixel, which is zero
+    series = read_point_time_series(tmp_path, _Y_FIRST + 2.05 * _Y_STEP, _X_FIRST + 2.05 * _X_STEP)
+    assert series["values_mm"] == pytest.approx([0.0, 0.0, 0.0])
 
 
 def test_read_point_time_series_rejects_ungeocoded_output(tmp_path):
@@ -114,8 +117,9 @@ def test_read_velocity_points_skips_nan_and_converts_units(tmp_path):
     assert all(f["properties"]["velocity"] == pytest.approx(2.0) for f in fc["features"])
     lons = {f["geometry"]["coordinates"][0] for f in fc["features"]}
     lats = {f["geometry"]["coordinates"][1] for f in fc["features"]}
-    assert lons == {_X_FIRST, _X_FIRST + _X_STEP, _X_FIRST + 2 * _X_STEP}
-    assert lats == {_Y_FIRST, _Y_FIRST + _Y_STEP, _Y_FIRST + 2 * _Y_STEP}
+    # points sit at pixel centres, half a step inside the corner X_FIRST / Y_FIRST name
+    assert sorted(lons) == pytest.approx(sorted(_X_FIRST + (k + 0.5) * _X_STEP for k in range(3)))
+    assert sorted(lats) == pytest.approx(sorted(_Y_FIRST + (k + 0.5) * _Y_STEP for k in range(3)))
 
 
 def test_read_velocity_points_decimates_large_grids(tmp_path):
@@ -170,9 +174,14 @@ def test_read_velocity_points_reprojects_utm_to_wgs84(tmp_path):
     fc = read_velocity_points(tmp_path)
     assert len(fc["features"]) == 9
 
+    # The first point is the centre of the first pixel: half a pixel (40 m) east and south of the
+    # grid origin, which is that pixel's outer corner.
+    import pyproj
+    centre = pyproj.Transformer.from_crs(_UTM_EPSG, 4326, always_xy=True).transform(_UTM_X_FIRST + 40.0, _UTM_Y_FIRST - 40.0)
+    assert centre[0] > _UTM_ORIGIN_LON and centre[1] < _UTM_ORIGIN_LAT
     origin = next(
         f for f in fc["features"]
-        if f["geometry"]["coordinates"] == pytest.approx([_UTM_ORIGIN_LON, _UTM_ORIGIN_LAT], abs=1e-6)
+        if f["geometry"]["coordinates"] == pytest.approx(list(centre), abs=1e-6)
     )
     assert origin["properties"]["velocity"] == pytest.approx(2.0)
 

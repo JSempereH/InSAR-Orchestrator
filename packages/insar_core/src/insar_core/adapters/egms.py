@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+
+import requests
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, List, Optional
@@ -132,7 +134,13 @@ class EGMSAdapter:
         destination.mkdir(parents=True, exist_ok=True)
         url = f"{API_BASE}/download/{product.filename}?id={product.query_id}"
         dest = destination / product.filename
-        stream_download(url, dest, headers=self._headers(), progress_cb=progress_cb)
+        try:
+            stream_download(url, dest, headers=self._headers, progress_cb=progress_cb)
+        except requests.exceptions.HTTPError as exc:
+            if exc.response is None or exc.response.status_code != 401:
+                raise
+            self._access_token = None           # the token was revoked or expired mid-transfer: sign in again once
+            stream_download(url, dest, headers=self._headers, progress_cb=progress_cb)
         return dest
 
 

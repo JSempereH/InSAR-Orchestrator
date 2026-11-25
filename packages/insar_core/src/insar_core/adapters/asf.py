@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -16,6 +16,12 @@ from insar_core.models.scene import SearchParams, SARScene, TrackSummary
 from insar_core.net import stream_download
 
 log = logging.getLogger(__name__)
+
+# NASA's catalogue answers a year of Sentinel-1 scenes slowly at busy hours, and the 30 seconds
+# asf_search waits by default ends in a failed search that works a minute later.
+_CMR_TIMEOUT_S = 120
+if asf.constants.INTERNAL.CMR_TIMEOUT < _CMR_TIMEOUT_S:
+    asf.constants.INTERNAL.CMR_TIMEOUT = _CMR_TIMEOUT_S
 
 _FLIGHT_DIRECTION_MAP = {
     "ASCENDING": asf.FLIGHT_DIRECTION.ASCENDING,
@@ -76,6 +82,74 @@ def _result_to_scene(r) -> SARScene:
         download_url=props.get("url"),
         file_name=props.get("fileName"),
     )
+
+
+# Sentinel-1 orbital period. Some catalog records store the ascending node crossing of the previous
+# orbit, which puts the orbit state vectors far from where the baseline calculation expects them and
+# makes it return absurd values. Moving the crossing forward by whole periods repairs those records
+# (the same repair InSARHub, MIT licence, applies before its own baseline table).
+_S1_ORBIT_PERIOD_S = 5929.0
+_MAX_PRE_POSITION_S = 600.0
+
+
+def _repair_ascending_node(result) -> None:
+    from dateutil.parser import isoparse
+
+    baseline = getattr(result, "baseline", None) or {}
+    node = baseline.get("ascendingNodeTime")
+    pre = ((baseline.get("stateVectors") or {}).get("positions") or {}).get("prePositionTime")
+    if not (node and pre):
+        return
+    try:
+        delta = isoparse(pre).timestamp() - isoparse(node).timestamp()
+    except (TypeError, ValueError):
+        return
+    if delta > _MAX_PRE_POSITION_S:
+        shift = int(round((delta - _MAX_PRE_POSITION_S / 2) / _S1_ORBIT_PERIOD_S))
+        if shift > 0:
+            fixed = datetime.fromtimestamp(isoparse(node).timestamp() + shift * _S1_ORBIT_PERIOD_S, tz=timezone.utc)
+            baseline["ascendingNodeTime"] = fixed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _attach_baselines(results: list, scenes: list) -> None:
+    """Fill `perpendicular_baseline_m` on `scenes` (one per entry of `results`, same order).
+
+    Baselines are relative, so each (track, direction) stack gets its own anchor, its first scene.
+    This is local arithmetic on data the search already returned: no request is made."""
+    try:
+        from asf_search.baseline import calculate_perpendicular_baselines
+    except ImportError:  # pragma: no cover - an asf_search without the baseline module
+        return
+    groups: dict[tuple, list[int]] = defaultdict(list)
+    for index, scene in enumerate(scenes):
+        groups[(scene.track_number, scene.flight_direction)].append(index)
+    for indexes in groups.values():
+        stack = [results[i] for i in indexes]
+        for item in stack:
+            _repair_ascending_node(item)
+        try:
+            computed = calculate_perpendicular_baselines(stack[0].properties["sceneName"], stack)
+        except Exception:
+            log.warning("Could not compute perpendicular baselines for track %s", scenes[indexes[0]].track_number, exc_info=True)
+            continue
+        by_name = {c.properties.get("sceneName"): c.properties.get("perpendicularBaseline") for c in computed}
+        by_name.setdefault(stack[0].properties["sceneName"], 0.0)
+        for i, item in zip(indexes, stack, strict=False):
+            value = by_name.get(item.properties.get("sceneName"))
+            # ASF reports a failed calculation as a missing value, and a wildly large one as an error.
+            scenes[i].perpendicular_baseline_m = float(value) if value is not None and abs(value) < 100_000 else None
+
+
+def _aoi_coverage(result, params: SearchParams) -> float:
+    """The share of the search area (0 to 1) that a catalogue result's footprint covers, 0 when unknown."""
+    try:
+        from shapely.geometry import shape
+
+        footprint = make_valid(shape(result.geometry))
+        area = make_valid(swkt.loads(params.aoi.wkt))
+        return float(footprint.intersection(area).area / area.area) if area.area > 0 else 0.0
+    except Exception:
+        return 0.0
 
 
 def _dominant_polarization(scenes: list) -> str | None:
@@ -189,25 +263,31 @@ class ASFAdapter(SceneSearchAdapter):
         S1C HH+HV scene acquired on the same track (polarization mismatch GAMMA will reject).
         """
         results = self._raw_search(params)
-        scenes = sorted(
-            (_result_to_scene(r) for r in results),
-            key=lambda s: s.acquisition_date,
+        pairs = sorted(
+            ((_result_to_scene(r), r) for r in results),
+            key=lambda item: item[0].acquisition_date,
         )
 
         # Find dominant polarization (VV or HH) by frequency
-        dominant_pol = _dominant_polarization(scenes)
+        dominant_pol = _dominant_polarization([scene for scene, _ in pairs])
         if dominant_pol:
             log.info("Filtering to dominant polarization: %s", dominant_pol)
-            scenes = [s for s in scenes if dominant_pol in (s.polarization or "")]
+            pairs = [(s, r) for s, r in pairs if dominant_pol in (s.polarization or "")]
 
-        # One scene per acquisition date
+        # One scene per acquisition date. Where the area lies across two consecutive frames a date has
+        # two scenes: the one that covers more of the area goes first and is kept, so the choice does
+        # not depend on the order the catalogue happened to answer in.
+        coverage = {id(r): _aoi_coverage(r, params) for _, r in pairs}
+        pairs.sort(key=lambda item: (item[0].acquisition_date, -coverage[id(item[1])]))
         seen: set[date] = set()
-        deduped: List[SARScene] = []
-        for scene in scenes:
+        deduped: List[tuple] = []
+        for scene, result in pairs:
             if scene.acquisition_date not in seen:
                 seen.add(scene.acquisition_date)
-                deduped.append(scene)
-        return deduped
+                deduped.append((scene, result))
+        scenes = [scene for scene, _ in deduped]
+        _attach_baselines([result for _, result in deduped], scenes)
+        return scenes
 
     def available_tracks(self, params: SearchParams) -> List[TrackSummary]:
         """Search without track/direction filters; aggregate by (track, direction)."""

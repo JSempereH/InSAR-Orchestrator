@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from insar_core.analysis import analyze_time_series
+from insar_core.analysis.timeseries import _t_quantile_975
 
 _START = np.datetime64("2020-01-03", "D")
 
@@ -140,3 +141,34 @@ def test_short_record_notes_that_seasonality_cannot_be_separated():
     a = analyze_time_series(dates, values)
     assert not a["seasonal"]["present"]
     assert any("shorter than 1.5 years" in line for line in a["narrative"])
+
+
+@pytest.mark.parametrize("dof, exact", [(3, 3.182), (5, 2.571), (10, 2.228), (30, 2.042), (1000, 1.962)])
+def test_student_t_factor_is_close_to_the_tables(dof, exact):
+    assert _t_quantile_975(dof) == pytest.approx(exact, rel=0.01)
+
+
+def _linear_series(n, noise, seed=1):
+    rng = np.random.default_rng(seed)
+    dates = [str(np.datetime64("2022-01-01") + np.timedelta64(12 * i, "D")).replace("-", "") for i in range(n)]
+    values = [-10.0 * (12 * i / 365.25) + rng.normal(0, noise) for i in range(n)]
+    return dates, values
+
+
+def test_a_short_series_gets_a_wider_interval_than_1_96_standard_errors():
+    short = analyze_time_series(*_linear_series(10, 1.0))["velocity"]
+    long = analyze_time_series(*_linear_series(120, 1.0))["velocity"]
+    assert short["ci95_factor"] > 2.2
+    assert long["ci95_factor"] == pytest.approx(1.98, abs=0.03)
+    half_width = (short["ci95"][1] - short["ci95"][0]) / 2
+    assert half_width == pytest.approx(short["ci95_factor"] * short["se_mm_yr"])
+
+
+def test_a_line_of_sight_series_is_not_called_subsidence():
+    dates, values = _linear_series(60, 0.5)
+    vertical = analyze_time_series(dates, values)
+    los = analyze_time_series(dates, values, line_of_sight=True)
+    assert vertical["model"]["label"] == "Steady subsidence"
+    assert los["model"]["label"] == "Steady motion away from the satellite"
+    assert "subsidence" not in " ".join(los["narrative"]) and "uplift" not in " ".join(los["narrative"])
+    assert los["velocity"] == vertical["velocity"]                      # the words change, the numbers do not

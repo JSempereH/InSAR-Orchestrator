@@ -208,8 +208,10 @@ def read_point_time_series(work_dir: Path, lat: float, lon: float) -> dict:
         if transformer is not None:
             x, y = transformer.transform(lon, lat)
 
-        col = round((x - geo["x_first"]) / geo["x_step"])
-        row = round((y - geo["y_first"]) / geo["y_step"])
+        # X_FIRST and Y_FIRST are the outer corner of the first pixel (the GeoTIFF origin), so the
+        # pixel that holds a point is the floor of the offset, not the nearest whole number.
+        col = math.floor((x - geo["x_first"]) / geo["x_step"])
+        row = math.floor((y - geo["y_first"]) / geo["y_step"])
         if not (0 <= row < geo["length"]) or not (0 <= col < geo["width"]):
             raise ValueError(
                 f"Point ({lat}, {lon}) falls outside the processed area in {path}."
@@ -243,8 +245,9 @@ def read_velocity_points(work_dir: Path) -> dict:
     # file's own EPSG (see _read_geocoding) - then reproject the whole batch
     # to WGS84 lon/lat in one call instead of one pyproj call per point.
     rows, cols = np.nonzero(~np.isnan(grid))
-    xs = geo["x_first"] + cols * step * geo["x_step"]
-    ys = geo["y_first"] + rows * step * geo["y_step"]
+    # the centre of each kept pixel, half a step inside its corner
+    xs = geo["x_first"] + (cols * step + 0.5) * geo["x_step"]
+    ys = geo["y_first"] + (rows * step + 0.5) * geo["y_step"]
 
     transformer = _to_wgs84(geo["epsg"])
     if transformer is not None:

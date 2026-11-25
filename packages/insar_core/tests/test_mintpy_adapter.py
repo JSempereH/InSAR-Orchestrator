@@ -389,7 +389,7 @@ def test_cds_rc_file_location_can_be_overridden(tmp_path, monkeypatch):
 
 # ── reference pixel ──────────────────────────────────────────────────────────
 
-def _reference_workspace(tmp_path, monkeypatch, coherence, mask=None, ref=(0, 3)):
+def _reference_workspace(tmp_path, monkeypatch, coherence, mask=None, ref=(0, 3), with_mask=True):
     """A MintPy work dir with the files pin_reference_point reads, and a stand-in
     reference_point.py that writes REF_Y/REF_X the way MintPy does."""
     import sys
@@ -406,8 +406,9 @@ def _reference_workspace(tmp_path, monkeypatch, coherence, mask=None, ref=(0, 3)
         f.attrs["REF_Y"], f.attrs["REF_X"] = str(ref[0]), str(ref[1])
     with h5py.File(work / "avgSpatialCoh.h5", "w") as f:
         f.create_dataset("coherence", data=coherence)
-    with h5py.File(work / "maskConnComp.h5", "w") as f:
-        f.create_dataset("mask", data=np.ones(coherence.shape, dtype=bool) if mask is None else mask)
+    if with_mask:
+        with h5py.File(work / "maskConnComp.h5", "w") as f:
+            f.create_dataset("mask", data=np.ones(coherence.shape, dtype=bool) if mask is None else mask)
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -441,6 +442,19 @@ def test_a_reference_pixel_on_the_edge_moves_to_the_most_coherent_interior_pixel
     coherence[3, 3] = 0.97
     adapter, stack = _reference_workspace(tmp_path, monkeypatch, coherence)
 
+    assert adapter.pin_reference_point() == {"previous": (0, 3), "chosen": (3, 3)}
+    assert _reference_of(stack) == (3, 3)
+
+
+def test_whole_hyp3_scenes_have_no_connected_component_mask_and_still_get_a_pinned_reference(tmp_path, monkeypatch):
+    import numpy as np
+
+    coherence = np.full((6, 6), 0.8)
+    coherence[0, 3] = 1.0
+    coherence[2:5, 2:5] = 0.95
+    coherence[3, 3] = 0.97
+    coherence[5:, :] = 0.0                      # no data: the coherence map is zero there
+    adapter, stack = _reference_workspace(tmp_path, monkeypatch, coherence, with_mask=False)
     assert adapter.pin_reference_point() == {"previous": (0, 3), "chosen": (3, 3)}
     assert _reference_of(stack) == (3, 3)
 

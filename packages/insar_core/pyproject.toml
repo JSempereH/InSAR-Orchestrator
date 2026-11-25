@@ -5,6 +5,7 @@ description = "Core InSAR processing library: scene search, pair building, HyP3 
 requires-python = ">=3.11"
 dependencies = [
     "asf-search>=12.2.2",
+    "python-dateutil>=2.8",
     "hyp3-sdk>=7.7.7",
     "shapely>=2.0",
     "requests>=2.31",
@@ -13,11 +14,17 @@ dependencies = [
     "numpy>=1.24",
     "pyproj>=3.5",
     "rasterio>=1.4",
+    # whole-cycle corrections of unwrapping errors (analysis/unwrap_correction.py)
+    "scipy>=1.9",
     # ERA5 weather data for the troposphere correction (see pipeline/era5_arco.py).
     "zarr>=3.1",
     "fsspec>=2024.6",
     "aiohttp>=3.9",
 ]
+
+[project.optional-dependencies]
+# The figures of the report (pipeline/report.py). Without it the report is written without figures.
+report = ["matplotlib>=3.7"]
 
 [build-system]
 requires = ["setuptools>=61"]

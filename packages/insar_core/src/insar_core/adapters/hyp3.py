@@ -32,18 +32,36 @@ DEFAULT_INSAR_PARAMETERS: dict = {
 }
 
 
+# What a burst pair is processed with unless a caller overrides it (INSAR_ISCE_BURST and
+# INSAR_ISCE_MULTI_BURST take only these two).
+DEFAULT_BURST_PARAMETERS: dict = {
+    "looks": "20x4",
+    "apply_water_mask": False,
+}
+
+
 def _sdk_job_to_submitted(job) -> SubmittedJob:
+    from insar_core.adapters import asf_burst
+
     status_map = {
         "PENDING": JobStatus.PENDING,
         "RUNNING": JobStatus.RUNNING,
         "SUCCEEDED": JobStatus.SUCCEEDED,
         "FAILED": JobStatus.FAILED,
     }
-    granules = job.job_parameters.get("granules", ["", ""])
-    ref = granules[0] if len(granules) > 0 else ""
-    sec = granules[1] if len(granules) > 1 else ""
+    parameters = job.job_parameters or {}
+    if "reference" in parameters and "secondary" in parameters:
+        # a multi-burst job: two lists of burst names, kept as one name per date (see asf_burst)
+        ref = asf_burst.join_granules(parameters.get("reference") or [])
+        sec = asf_burst.join_granules(parameters.get("secondary") or [])
+    else:
+        granules = parameters.get("granules", ["", ""])
+        ref = granules[0] if len(granules) > 0 else ""
+        sec = granules[1] if len(granules) > 1 else ""
 
     def _extract_date(granule: str) -> Optional[date]:
+        if asf_burst.is_burst_granule(granule):
+            return asf_burst.burst_date(granule)
         # Sentinel-1 granule date is at chars 17-25: YYYYMMDD
         try:
             return datetime.strptime(granule[17:25], "%Y%m%d").date()
@@ -84,7 +102,24 @@ class HyP3Adapter(ProcessorAdapter):
         name: str = "insar-job",
         **parameters,
     ) -> SubmittedJob:
-        """Submit one INSAR_GAMMA job. `parameters` override DEFAULT_INSAR_PARAMETERS."""
+        """Submit one pair. `parameters` override the defaults of the job it becomes.
+
+        Whole scenes go to INSAR_GAMMA (DEFAULT_INSAR_PARAMETERS). Burst names, alone or several
+        joined with "+" (see insar_core.adapters.asf_burst), go to INSAR_ISCE_BURST or
+        INSAR_ISCE_MULTI_BURST (DEFAULT_BURST_PARAMETERS); options that only INSAR_GAMMA has are
+        left out for them, so one set of stored parameters serves both."""
+        from insar_core.adapters import asf_burst
+
+        if asf_burst.is_burst_granule(reference):
+            options = {**DEFAULT_BURST_PARAMETERS, **{k: v for k, v in parameters.items() if k in DEFAULT_BURST_PARAMETERS}}
+            first, second = asf_burst.split_granules(reference), asf_burst.split_granules(secondary)
+            if len(first) != len(second):
+                raise ValueError(f"The two dates have a different number of bursts ({len(first)} and {len(second)})")
+            if len(first) == 1:
+                batch = self._client.submit_insar_isce_burst_job(first[0], second[0], name=name, **options)
+            else:
+                batch = self._client.submit_insar_isce_multi_burst_job(first, second, name=name, **options)
+            return _sdk_job_to_submitted(list(batch)[0])
         batch = self._client.submit_insar_job(
             reference,
             secondary,

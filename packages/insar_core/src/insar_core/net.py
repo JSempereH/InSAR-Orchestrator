@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 import requests
 
@@ -32,7 +33,7 @@ def stream_download(
     url: str,
     dest: Path,
     *,
-    headers: Optional[dict] = None,
+    headers: Optional[Union[dict, Callable[[], dict]]] = None,
     session: Optional[requests.Session] = None,
     file_index: int = 1,
     file_count: int = 1,
@@ -48,6 +49,9 @@ def stream_download(
     Pass `session` (e.g. an authenticated requests.Session) when the URL
     requires auth beyond plain headers - e.g. ASF's data pool, which needs
     an Earthdata-authenticated session to follow its redirect chain.
+
+    `headers` may be a function, called before every attempt, so a token that expires during a
+    long transfer is renewed instead of failing the retry.
 
     Retries up to `max_retries` times on connection errors, timeouts, and
     5xx responses (not on 4xx - a bad URL or expired auth won't fix itself on
@@ -82,6 +86,14 @@ def stream_download(
     tmp_dest.rename(dest)
 
 
+_QUERY = re.compile(r"\?[^\s'\")>]+")
+
+
+def redact(text: object) -> str:
+    """`text` without URL query strings: signed download links carry their access token there."""
+    return _QUERY.sub("?<redacted>", str(text))
+
+
 def _retry_or_raise(exc: Exception, label: str, attempt: int, max_retries: int) -> int:
     attempt += 1
     if attempt > max_retries:
@@ -89,7 +101,7 @@ def _retry_or_raise(exc: Exception, label: str, attempt: int, max_retries: int) 
     backoff = _RETRY_BACKOFF_S * (2 ** (attempt - 1))
     log.warning(
         "request for %s failed (attempt %d/%d): %s - retrying in %.1fs",
-        label, attempt, max_retries, exc, backoff,
+        redact(label), attempt, max_retries, redact(exc), backoff,
     )
     time.sleep(backoff)
     return attempt
@@ -123,13 +135,21 @@ def request_with_retry(method: str, url: str, *, max_retries: int = _MAX_RETRIES
 
 def _attempt_download(
     requester, url: str, tmp_dest: Path, *,
-    headers: Optional[dict], file_index: int, file_count: int,
+    headers: Optional[Union[dict, Callable[[], dict]]], file_index: int, file_count: int,
     progress_cb: Optional[Callable[..., None]], timeout: int,
 ) -> None:
+    meta = tmp_dest.with_name(tmp_dest.name + ".meta")
     resume_from = tmp_dest.stat().st_size if tmp_dest.exists() else 0
-    req_headers = dict(headers or {})
+    req_headers = dict((headers() if callable(headers) else headers) or {})
     if resume_from:
         req_headers["Range"] = f"bytes={resume_from}-"
+        # Only continue if the remote file is the one the first bytes came from.
+        validator = meta.read_text().strip() if meta.exists() else ""
+        if validator:
+            req_headers["If-Range"] = validator
+        else:
+            resume_from = 0           # nothing says which file these bytes belong to
+            req_headers.pop("Range")
 
     with requester.get(url, headers=req_headers, stream=True, timeout=timeout) as r:
         if resume_from and r.status_code == 416:
@@ -138,7 +158,7 @@ def _attempt_download(
             # way it can't be trusted - discard it and retry from byte zero.
             tmp_dest.unlink(missing_ok=True)
             raise requests.exceptions.ConnectionError("partial download no longer matches the remote file, restarting")
-        resumed = resume_from and r.status_code == 206
+        resumed = bool(resume_from) and r.status_code == 206 and _range_start(r) == resume_from
         if resume_from and not resumed:
             # Server ignored the Range request (plain 200) - it doesn't
             # support resuming this URL, so the partial data on disk can't
@@ -147,6 +167,11 @@ def _attempt_download(
         r.raise_for_status()
 
         total = _total_size(r, resume_from) if resumed else int(r.headers.get("content-length", 0))
+        validator = r.headers.get("etag") or r.headers.get("last-modified") or ""
+        if not resumed:
+            meta.unlink(missing_ok=True)
+        if validator and not resumed:
+            meta.write_text(validator)
         downloaded = resume_from
         t0 = time.monotonic()
 
@@ -168,6 +193,18 @@ def _attempt_download(
                             speed_bps=speed,
                             eta_s=eta,
                         )
+    if total and downloaded != total:
+        # The connection closed early without an error: the file is incomplete, so go again.
+        raise requests.exceptions.ConnectionError(f"received {downloaded} of {total} bytes")
+    meta.unlink(missing_ok=True)
+
+
+def _range_start(response: requests.Response) -> Optional[int]:
+    """The first byte a 206 response carries, from `Content-Range: bytes start-end/total`."""
+    try:
+        return int(response.headers.get("content-range", "").split()[-1].split("-")[0])
+    except (ValueError, IndexError):
+        return None
 
 
 def _total_size(response: requests.Response, resume_from: int) -> int:

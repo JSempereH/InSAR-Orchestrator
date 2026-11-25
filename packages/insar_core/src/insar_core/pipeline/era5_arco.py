@@ -161,6 +161,29 @@ def archive_reachable(timeout: float = 5.0) -> bool:
         return False
 
 
+_READ_ATTEMPTS = 4
+_READ_BACKOFF_S = 2.0
+
+
+def _with_retry(read, what: str):
+    """`read()`, tried again after a pause when the network drops it.
+
+    One correction asks for a field per date and variable, hundreds of requests over tens of
+    minutes; without this a single dropped connection ends the whole MintPy run. Errors that
+    another attempt cannot fix (a missing variable, a bad index) are raised at once."""
+    import time
+
+    for attempt in range(1, _READ_ATTEMPTS + 1):
+        try:
+            return read()
+        except (KeyError, IndexError, ValueError, TypeError):
+            raise
+        except Exception as exc:
+            if attempt == _READ_ATTEMPTS:
+                raise RuntimeError(f"could not read {what} from the ARCO-ERA5 archive after {_READ_ATTEMPTS} attempts: {exc}") from exc
+            time.sleep(_READ_BACKOFF_S * 2 ** (attempt - 1))
+
+
 def _open_archive():
     import zarr
 
@@ -211,7 +234,7 @@ def retrieve(request: dict, target, archive=None) -> None:
     if missing:
         raise ValueError(f"unsupported ERA5 variables: {sorted(missing)}")
 
-    group = archive if archive is not None else _open_archive()
+    group = archive if archive is not None else _with_retry(_open_archive, "the archive")
     levels_all = np.asarray(group["level"][:])
     lats, lons, rows, columns = _grid(request["area"], np.asarray(group["latitude"][:]), np.asarray(group["longitude"][:]))
     levels = [int(v) for v in request["pressure_level"]]
@@ -220,7 +243,9 @@ def retrieve(request: dict, target, archive=None) -> None:
 
     fields = {}
     for name, _ in _VARIABLES:
-        block = np.asarray(group[name][hours, :, rows.min():rows.max() + 1, :], dtype="float64")
+        block = _with_retry(
+            lambda name=name: np.asarray(group[name][hours, :, rows.min():rows.max() + 1, :], dtype="float64"),
+            f"{name} for {when:%Y-%m-%d %H:%M}")
         block = block[level_index][:, rows - rows.min(), :][:, :, columns]
         if not np.isfinite(block).all():
             raise RuntimeError(f"ERA5 has no {name} for {when:%Y-%m-%d %H:%M} in the ARCO-ERA5 archive yet")

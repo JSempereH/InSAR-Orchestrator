@@ -122,6 +122,7 @@ def test_stream_download_resumes_from_partial_file_via_range(tmp_path, monkeypat
     dest = tmp_path / "file.tif"
     partial = dest.with_name(dest.name + ".part")
     partial.write_bytes(b"abcd")  # 4 bytes already on disk from a previous attempt
+    partial.with_name(partial.name + ".meta").write_text('"v1"')   # and the record of which file they came from
 
     class ResumingRequester(FakeRequester):
         def get(self, url, headers=None, stream=True, timeout=600):
@@ -205,6 +206,7 @@ def test_stream_download_restarts_when_part_file_is_already_complete(tmp_path, m
     monkeypatch.setattr("time.sleep", lambda s: None)
     dest = tmp_path / "file.tif"
     dest.with_name(dest.name + ".part").write_bytes(b"abcdefgh")
+    dest.with_name(dest.name + ".part.meta").write_text('"v1"')
     requester = FakeRequester([
         FakeResponse(status_code=416),
         FakeResponse(status_code=200, headers={"content-length": "8"}, chunks=[b"abcdefgh"]),
@@ -229,3 +231,60 @@ def test_stream_download_retries_rate_limit(tmp_path, monkeypatch):
 
     assert dest.read_bytes() == b"abcd"
     assert len(requester.calls) == 2
+
+
+def test_a_download_that_ends_early_without_an_error_is_tried_again(tmp_path, monkeypatch):
+    monkeypatch.setattr("insar_core.net._RETRY_BACKOFF_S", 0)
+    dest = tmp_path / "f.tif"
+    requester = FakeRequester([
+        FakeResponse(headers={"content-length": "8", "etag": '"v1"'}, chunks=[b"abcd"]),                      # cut short
+        FakeResponse(status_code=206, headers={"content-range": "bytes 4-7/8", "content-length": "4"}, chunks=[b"efgh"]),
+    ])
+    stream_download("https://example.com/f", dest, session=requester)
+    assert dest.read_bytes() == b"abcdefgh"
+    assert requester.calls[1]["headers"]["Range"] == "bytes=4-" and requester.calls[1]["headers"]["If-Range"] == '"v1"'
+    assert not list(tmp_path.glob("*.meta"))
+
+
+def test_a_part_file_of_unknown_origin_or_a_changed_remote_is_never_continued(tmp_path):
+    dest = tmp_path / "f.tif"
+    dest.with_name("f.tif.part").write_bytes(b"old!")                    # no record of which file it came from
+    requester = FakeRequester([FakeResponse(headers={"content-length": "8"}, chunks=[b"abcdefgh"])])
+    stream_download("https://example.com/f", dest, session=requester)
+    assert "Range" not in requester.calls[0]["headers"] and dest.read_bytes() == b"abcdefgh"
+
+    dest2 = tmp_path / "g.tif"
+    dest2.with_name("g.tif.part").write_bytes(b"old!")
+    dest2.with_name("g.tif.part.meta").write_text('"v1"')
+    requester = FakeRequester([                                          # the remote changed: 206 starting somewhere else
+        FakeResponse(status_code=206, headers={"content-range": "bytes 0-7/8", "content-length": "8"}, chunks=[b"abcdefgh"]),
+    ])
+    stream_download("https://example.com/g", dest2, session=requester)
+    assert dest2.read_bytes() == b"abcdefgh"
+
+
+def test_headers_given_as_a_function_are_renewed_on_every_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr("insar_core.net._RETRY_BACKOFF_S", 0)
+    tokens = iter(["one", "two"])
+    requester = FakeRequester([
+        FakeResponse(error=requests.exceptions.ConnectionError("dropped")),
+        FakeResponse(headers={"content-length": "4"}, chunks=[b"abcd"]),
+    ])
+    stream_download("https://example.com/f", tmp_path / "f", session=requester, headers=lambda: {"Authorization": next(tokens)})
+    assert [c["headers"]["Authorization"] for c in requester.calls] == ["one", "two"]
+
+
+def test_signed_urls_are_not_written_to_the_log(tmp_path, monkeypatch, caplog):
+    import logging
+
+    from insar_core.net import redact
+
+    monkeypatch.setattr("insar_core.net._RETRY_BACKOFF_S", 0)
+    assert redact("GET https://bucket.s3.amazonaws.com/f.zip?X-Amz-Signature=abc&Expires=1 failed") == "GET https://bucket.s3.amazonaws.com/f.zip?<redacted> failed"
+    requester = FakeRequester([
+        FakeResponse(error=requests.exceptions.ConnectionError("failed for https://h/f?X-Amz-Signature=SECRET")),
+        FakeResponse(headers={"content-length": "4"}, chunks=[b"abcd"]),
+    ])
+    with caplog.at_level(logging.WARNING):
+        stream_download("https://h/f?X-Amz-Signature=SECRET", tmp_path / "f", session=requester)
+    assert "SECRET" not in caplog.text
