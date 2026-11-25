@@ -1,5 +1,6 @@
 """EGMS search/download endpoints. All network calls to the real EGMS API
 are mocked out via egms_service.get_egms_adapter."""
+import os
 import time
 from pathlib import Path
 
@@ -434,8 +435,8 @@ def test_timeseries_returns_dates_and_values(client, monkeypatch, tmp_path):
 
 
 @pytest.mark.skipif(
-    not _REAL_L2B_ZIP.exists(),
-    reason="Real EGMS L2b sample only present on machines that ran a real download",
+    not _REAL_L2B_ZIP.exists() or not os.environ.get("RUN_REAL_DATA"),
+    reason="Needs a real EGMS L2b download and takes minutes: set RUN_REAL_DATA=1 to run it",
 )
 def test_extract_functions_against_real_l2b_download():
     """Smoke test against an actual downloaded EGMS L2b product, not a

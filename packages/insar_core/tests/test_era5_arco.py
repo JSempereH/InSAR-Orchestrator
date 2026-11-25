@@ -199,3 +199,38 @@ def test_the_archive_is_found_in_either_zarr_format(monkeypatch, present, expect
     requests = pytest.importorskip("requests")
     monkeypatch.setattr(requests, "get", lambda url, timeout: _Answer(200 if url.rsplit("/", 1)[1] in present else 404))
     assert era5_arco.archive_reachable() is expected
+
+
+def test_a_read_the_network_dropped_is_tried_again(monkeypatch):
+    monkeypatch.setattr(era5_arco, "_READ_BACKOFF_S", 0.0)
+    calls = {"n": 0}
+
+    def read():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionError("reset by peer")
+        return "data"
+
+    assert era5_arco._with_retry(read, "temperature") == "data" and calls["n"] == 3
+
+
+def test_a_read_that_keeps_failing_says_what_and_how_often(monkeypatch):
+    monkeypatch.setattr(era5_arco, "_READ_BACKOFF_S", 0.0)
+
+    def read():
+        raise ConnectionError("reset by peer")
+
+    with pytest.raises(RuntimeError, match="temperature.*after 4 attempts"):
+        era5_arco._with_retry(read, "temperature")
+
+
+def test_an_error_another_attempt_cannot_fix_is_not_retried(monkeypatch):
+    calls = {"n": 0}
+
+    def read():
+        calls["n"] += 1
+        raise KeyError("no such variable")
+
+    with pytest.raises(KeyError):
+        era5_arco._with_retry(read, "temperature")
+    assert calls["n"] == 1

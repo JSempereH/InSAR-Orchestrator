@@ -51,7 +51,7 @@ export function SLCPanel({ projectId }: SLCPanelProps) {
     enabled: expanded && !!summary?.storage_path,
   });
 
-  const scenes = scenesQuery.data ?? [];
+  const scenes = useMemo(() => scenesQuery.data ?? [], [scenesQuery.data]);
   const downloadable = useMemo(() => scenes.filter((s) => !s.already_downloaded), [scenes]);
   const selectedScenes = useMemo(() => scenes.filter((s) => selected.has(s.granule_name)), [scenes, selected]);
   const totalSizeGb = selectedScenes.reduce((sum, s) => sum + (s.size_mb ?? 0), 0) / 1000;

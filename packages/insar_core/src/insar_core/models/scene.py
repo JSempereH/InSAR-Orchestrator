@@ -68,6 +68,13 @@ class SARScene:
     # which only needs granule_name).
     download_url: Optional[str] = None
     file_name: Optional[str] = None
+    # Signed perpendicular baseline in metres relative to the first scene of the stack,
+    # worked out locally from the orbit state vectors the ASF search already returns.
+    # None when ASF did not return enough orbit data for the scene.
+    perpendicular_baseline_m: Optional[float] = None
+    # For a scene made of bursts (see insar_core.adapters.asf_burst): the identifiers of its bursts, which
+    # are the same on every date of a stack. `granule_name` then holds the burst names joined with "+".
+    burst_ids: Optional[tuple[str, ...]] = None
 
 
 @dataclass

@@ -76,7 +76,7 @@ export function GroundMotionPage({ onGoToSettings }: GroundMotionPageProps) {
     onSuccess: (products) => setSelected(new Set(products.map((p) => p.filename))),
   });
 
-  const products = searchMut.data ?? [];
+  const products = useMemo(() => searchMut.data ?? [], [searchMut.data]);
   const selectedProducts = useMemo(
     () => products.filter((p) => selected.has(p.filename)),
     [products, selected]

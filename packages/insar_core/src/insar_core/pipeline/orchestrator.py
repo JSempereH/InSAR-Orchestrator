@@ -11,6 +11,7 @@ from insar_core.adapters.base import ProcessorAdapter, SceneSearchAdapter
 from insar_core.models.job import JobStatus, SubmittedJob
 from insar_core.models.scene import SearchParams
 from insar_core.pipeline.pair_builder import build_sbas_pairs
+from insar_core.pipeline.pair_planner import PairPlan, PairPlanConfig, plan_pairs
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +21,23 @@ log = logging.getLogger(__name__)
 # bulk-submit API for this job type (it doesn't - submit_insar_job takes
 # exactly one pair per call).
 _SUBMIT_CONCURRENCY = 4
+
+
+# Credits HyP3 charges for one whole-scene interferogram (INSAR_GAMMA), by looks.
+_SCENE_CREDITS = {"20x4": 10, "10x2": 15}
+
+
+def credits_per_pair_for(scenes, looks: str = "20x4") -> float:
+    """What HyP3 charges for one interferogram between two of `scenes`, at `looks`.
+
+    Scenes made of bursts are priced by how many bursts they have (see asf_burst.burst_credits),
+    whole scenes by the looks alone."""
+    from insar_core.adapters.asf_burst import burst_credits
+
+    bursts = next((len(s.burst_ids) for s in scenes if getattr(s, "burst_ids", None)), 0)
+    if bursts:
+        return burst_credits(bursts, looks)
+    return _SCENE_CREDITS.get(looks, _SCENE_CREDITS["20x4"])
 
 
 @dataclass
@@ -65,6 +83,22 @@ class InSAROrchestrator:
             scene_count=len(scenes),
             pairs_preview=preview,
         )
+
+    def plan_pairs(
+        self,
+        params: SearchParams,
+        config: Optional[PairPlanConfig] = None,
+        submitted_pairs: Optional[set[tuple[str, str]]] = None,
+        excluded_pairs: Optional[set[tuple[str, str]]] = None,
+        looks: str = "20x4",
+    ) -> PairPlan:
+        """The pair network for these search parameters, with what is already sent or left out marked.
+
+        Nothing is submitted. See insar_core.pipeline.pair_planner for what the plan reports. `looks`
+        is the resolution the pairs will be processed at, which sets what each one costs."""
+        scenes = self._scenes.search(params)
+        return plan_pairs(scenes, config or PairPlanConfig(), credits_per_pair=credits_per_pair_for(scenes, looks)).mark(
+            submitted_pairs or (), excluded_pairs or ())
 
     def build_pairs(
         self,

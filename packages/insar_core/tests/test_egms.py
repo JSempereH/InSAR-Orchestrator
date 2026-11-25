@@ -157,5 +157,28 @@ def test_download_builds_url_with_filename_and_query_id(monkeypatch, tmp_path: P
 
     assert result == tmp_path / "product.zip"
     assert captured["url"] == f"{API_BASE}/download/product.zip?id=q42"
-    assert captured["headers"]["Authorization"] == "Bearer tok-abc"
+    assert captured["headers"]()["Authorization"] == "Bearer tok-abc"   # a function: renewed on every attempt
     assert result.read_text() == "fake content"
+
+
+def test_a_token_revoked_during_a_download_is_replaced_once_and_the_download_goes_on(monkeypatch, tmp_path):
+    import requests
+
+    from insar_core.models.egms import EGMSProduct
+
+    calls = []
+    _install_post(monkeypatch, calls)
+    attempts = []
+
+    def fake_stream_download(url, dest, **kwargs):
+        attempts.append(kwargs["headers"]()["Authorization"])
+        if len(attempts) == 1:
+            response = requests.Response()
+            response.status_code = 401
+            raise requests.exceptions.HTTPError(response=response)
+        dest.write_text("ok")
+
+    monkeypatch.setattr("insar_core.adapters.egms.stream_download", fake_stream_download)
+    adapter = EGMSAdapter(_TEST_KEY)
+    adapter.download(EGMSProduct(query_id="q", filename="p.zip", level="L3"), tmp_path)
+    assert len(attempts) == 2 and len(calls) == 2          # a second sign-in, then the transfer went through

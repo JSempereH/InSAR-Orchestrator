@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import {
-  adminApi, batchesApi, creditsApi, downloadQueueApi, jobsApi, projectsApi,
+  adminApi, batchesApi, creditsApi, downloadQueueApi, projectsApi,
   Batch, Project, QueueState,
 } from "../api/client";
 import { JobTable } from "../components/JobMonitor/JobTable";
 import { CreditsWidget } from "../components/JobMonitor/CreditsWidget";
 import { MintPyPanel } from "../components/JobMonitor/MintPyPanel";
+import { NisarPanel } from "../components/NisarPanel";
+import { PairPlanDialog } from "../components/JobMonitor/PairPlanDialog";
 import { NewProjectWizard } from "../components/ProjectWizard/NewProjectWizard";
 import { SLCPanel } from "../components/SLC/SLCPanel";
 import { useDialogs } from "../components/Dialogs";
@@ -21,6 +23,7 @@ export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
   const [expandedBatchIds, setExpandedBatchIds] = useState<Set<string>>(new Set());
   const [creatingProject, setCreatingProject] = useState(false);
   const [autoDownload, setAutoDownload] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
 
   const deleteMut = useMutation({
     mutationFn: projectsApi.delete,
@@ -51,6 +54,9 @@ export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
   });
 
   const activeProject = projects?.find((p) => p.id === activeProjectId) ?? null;
+  const isNisar = activeProject?.engine === "nisar_gunw";
+  // engines whose products are downloaded as they are: no HyP3 batches, no pair plan
+  const isReadyMade = isNisar;
 
   const { data: batches, refetch: refetchBatches } = useQuery({
     queryKey: ["batches", activeProjectId],
@@ -83,32 +89,15 @@ export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
     window.setTimeout(() => setHighlightBatchId((cur) => (cur === batchId ? null : cur)), 6000);
   }
 
-  const submitMut = useMutation({
-    mutationFn: async (projectId: string) => {
-      const plan = await jobsApi.plan(projectId, { dry_run: true, max_temporal_neighbors: activeProject?.max_temporal_neighbors ?? 3 });
-      const sizeNote = plan.estimated_size_gb != null ? `\n≈ ${plan.estimated_size_gb} GB estimated once downloaded.` : "";
-      const ok = await confirm({
-        title: `Submit ${plan.total_pairs} pairs to HyP3?`,
-        message: `This will consume HyP3 processing credits.${sizeNote}`,
-        confirmLabel: "Submit batch",
-      });
-      if (!ok) throw new Error("cancelled");
-      return jobsApi.submit(projectId, {
-        dry_run: false,
-        max_temporal_neighbors: activeProject?.max_temporal_neighbors ?? 3,
-        auto_download: autoDownload,
-      });
-    },
-    onSuccess: (batch) => {
-      toast({
-        title: "Batch created",
-        message: `${batch.label ?? "New batch"}: ${batch.total_pairs} pairs are being sent to HyP3.`,
-        actionLabel: "Show batch",
-        onAction: () => revealBatch(batch.id),
-      });
-      revealBatch(batch.id);
-    },
-  });
+  function batchCreated(batch: Batch) {
+    toast({
+      title: "Batch created",
+      message: `${batch.label ?? "New batch"}: ${batch.total_pairs} pairs are being sent to HyP3.`,
+      actionLabel: "Show batch",
+      onAction: () => revealBatch(batch.id),
+    });
+    revealBatch(batch.id);
+  }
 
   const refreshMut = useMutation({
     mutationFn: async (projectId: string) => {
@@ -169,7 +158,7 @@ export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
       qc.invalidateQueries({ queryKey: ["jobs"] });
     }
     prevQueueDone.current = queueState?.done;
-  }, [queueState?.done]);
+  }, [queueState?.done, qc]);
 
   function selectProject(p: Project) {
     setActiveProjectId(p.id);
@@ -299,9 +288,10 @@ export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 15 }}>{activeProject.name}</div>
                   <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                    Track {activeProject.track_number} · {activeProject.flight_direction} · {activeProject.date_start} → {activeProject.date_end}
+                    {isNisar ? "NISAR GUNW" : `Track ${activeProject.track_number} · ${activeProject.flight_direction}`} · {activeProject.date_start} → {activeProject.date_end}
                   </div>
                 </div>
+                {!isReadyMade && (<>
                 <label
                   title="Automatically queue each track for download as soon as HyP3 finishes processing it"
                   style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-muted)", cursor: "pointer" }}
@@ -317,24 +307,33 @@ export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
                 <button
                   className="btn"
                   title="Look for new Sentinel-1 acquisitions up to today and process only the new pairs"
-                  disabled={refreshMut.isPending || submitMut.isPending}
+                  disabled={refreshMut.isPending}
                   onClick={() => refreshMut.mutate(activeProjectId!)}
                 >
                   {refreshMut.isPending ? "Checking…" : "Update to today"}
                 </button>
-                <button
-                  className="btn btn-primary"
-                  disabled={submitMut.isPending}
-                  onClick={() => submitMut.mutate(activeProjectId!)}
-                >
-                  {submitMut.isPending ? "Submitting…" : "+ Submit new batch"}
+                <button className="btn btn-primary" onClick={() => setPlanOpen(true)}>
+                  + Submit new batch
                 </button>
+                </>)}
               </div>
 
-              {submitMut.isError && String(submitMut.error) !== "Error: cancelled" && (
-                <div style={{ padding: "10px 14px", background: "var(--danger-light)", borderRadius: "var(--radius)", color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>
-                  Submission failed: {String(submitMut.error)}
-                </div>
+              {isNisar && (
+                <>
+                  <NisarPanel projectId={activeProjectId!} />
+                  <MintPyPanel projectId={activeProjectId!} onOpenViewer={onOpenViewer} />
+                </>
+              )}
+
+              {!isReadyMade && (<>
+              {planOpen && (
+                <PairPlanDialog
+                  projectId={activeProjectId!}
+                  projectNeighbors={activeProject.max_temporal_neighbors ?? 3}
+                  autoDownload={autoDownload}
+                  onClose={() => setPlanOpen(false)}
+                  onSubmitted={batchCreated}
+                />
               )}
 
               {refreshMut.isError && String(refreshMut.error) !== "Error: cancelled" && (
@@ -371,6 +370,7 @@ export function DashboardPage({ onOpenViewer }: { onOpenViewer: (datasetId: stri
                   onOpenViewer={onOpenViewer}
                 />
               )}
+              </>)}
             </>
           )}
         </div>

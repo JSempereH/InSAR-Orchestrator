@@ -11,7 +11,13 @@ The approach follows common practice in the PSI/SBAS literature:
   least 1.5 years (MintPy's timeseries2velocity offers the same periodic term).
 * Velocity from least squares, with an uncertainty widened for lag-1
   autocorrelation of the residuals, plus the robust Theil-Sen slope and the
-  Mann-Kendall test for the existence of a monotonic trend.
+  Mann-Kendall test for the existence of a monotonic trend. The 95% interval
+  uses Student's t with the effective number of observations, so a short or
+  strongly autocorrelated series gets a wider interval than 1.96 standard errors.
+* The words depend on what the series measures. A vertical series is described
+  as subsidence or uplift. A line-of-sight series is described as motion away
+  from or towards the satellite, because a line of sight mixes vertical and
+  horizontal motion and calling it subsidence would claim more than is known.
 * Robust outlier flagging (median absolute deviation) and sampling gaps.
 
 Everything is vectorized with numpy: all candidate break dates are fitted in one
@@ -25,6 +31,8 @@ import math
 from typing import Any, Optional, Sequence
 
 import numpy as np
+
+from insar_core.common import robust_std
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -106,12 +114,29 @@ def _mann_kendall(y: np.ndarray) -> tuple[float, float]:
     return z, math.erfc(abs(z) / math.sqrt(2))
 
 
-def _describe_change(v1: float, v2: float, thr: float) -> tuple[str, str]:
+def _t_quantile_975(dof: float) -> float:
+    """The 97.5% point of Student's t (the factor of a two-sided 95% interval).
+
+    Cornish-Fisher expansion around the normal value, within 1% of the exact figure from 3
+    degrees of freedom up (3.16 against 3.18 at 3, 2.57 at 5, 2.23 at 10, 1.96 for many) and 3% low
+    at 2, below which it is not used. Written out so that numpy stays the only dependency."""
+    z = 1.959964
+    v = max(float(dof), 2.0)
+    return (z + (z ** 3 + z) / (4 * v) + (5 * z ** 5 + 16 * z ** 3 + 3 * z) / (96 * v ** 2)
+            + (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / (384 * v ** 3))
+
+
+def _direction_words(line_of_sight: bool):
+    """The word for a negative and for a positive velocity, for what the series measures."""
+    if line_of_sight:
+        return lambda v: "motion away from the satellite" if v < 0 else "motion towards the satellite"
+    return lambda v: "subsidence" if v < 0 else "uplift"
+
+
+def _describe_change(v1: float, v2: float, thr: float, line_of_sight: bool = False) -> tuple[str, str]:
     """Names the change between an earlier and a later velocity (mm/yr)."""
     big1, big2 = abs(v1) >= thr, abs(v2) >= thr
-
-    def direction(v: float) -> str:
-        return "subsidence" if v < 0 else "uplift"
+    direction = _direction_words(line_of_sight)
 
     if big1 and big2 and v1 * v2 < 0:
         return "Trend reversal", f"the motion reverses from {direction(v1)} to {direction(v2)}"
@@ -132,11 +157,13 @@ def _signed(v: float, digits: int = 1) -> str:
 
 # ── main entry ───────────────────────────────────────────────────────────
 
-def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float]) -> Optional[dict[str, Any]]:
+def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float], line_of_sight: bool = False) -> Optional[dict[str, Any]]:
     """Analyze one displacement series.
 
     `dates` are "YYYYMMDD" or ISO strings, `values_mm` the cumulative
-    displacement. Returns a JSON-ready dict, or None when fewer than 8 valid
+    displacement. `line_of_sight` says the series is along a satellite's line of
+    sight (positive towards the satellite) and not vertical, which changes the
+    words used, not the numbers. Returns a JSON-ready dict, or None when fewer than 8 valid
     observations are available. Keys: n, start_date, end_date, span_years,
     median_step_days, gaps, max, min, mean, std, velocity, model, seasonal,
     noise, net_change_mm, series (dates, values, fit, trend), break_index,
@@ -243,6 +270,7 @@ def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float]) -> Opt
     k_lin = 2 + ks
     sigma2 = float(linear["sse"]) / max(1, n - k_lin)
     se_ols = math.sqrt(sigma2 * float(linear["inv"][1][1])) * math.sqrt(n / n_eff)
+    ci_factor = _t_quantile_975(n_eff - k_lin)
     v_ols = float(linear["beta"][1])
     mk_z, mk_p = _mann_kendall(y)
     v_ts = _theil_sen(t, y)
@@ -259,7 +287,7 @@ def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float]) -> Opt
     # Noise and outliers on the chosen model's residuals.
     res = y - fit_values
     rms = float(np.sqrt((res ** 2).mean()))
-    mad = float(np.median(np.abs(res - np.median(res)))) * 1.4826
+    mad = float(robust_std(res, axis=None))
     outliers: list[dict[str, Any]] = []
     if mad > 0:
         for i in np.nonzero(np.abs(res) > 3.5 * mad)[0]:
@@ -268,10 +296,8 @@ def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float]) -> Opt
     model: dict[str, Any] = {"kind": chosen["kind"], "label": "", "bic_gain": float(bic_gain)}
     net_change = float(trend_values[-1] - trend_values[0])
     narrative: list[str] = []
-    thr = max(0.5, 1.96 * se_ols)  # velocities below this count as "no motion" when naming a change
-
-    def direction(v: float) -> str:
-        return "subsidence" if v < 0 else "uplift"
+    thr = max(0.5, ci_factor * se_ols)  # velocities below this count as "no motion" when naming a change
+    direction = _direction_words(line_of_sight)
 
     kind = chosen["kind"]
     if kind == "stable":
@@ -280,14 +306,14 @@ def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float]) -> Opt
     elif kind == "linear":
         model["label"] = f"Steady {direction(v_ols)}"
         narrative.append(
-            f"Steady {direction(v_ols)} at {_signed(v_ols)} ± {1.96 * se_ols:.1f} mm/yr (95%), "
+            f"Steady {direction(v_ols)} at {_signed(v_ols)} ± {ci_factor * se_ols:.1f} mm/yr (95%), "
             f"about {_signed(net_change)} mm over {span:.1f} years."
         )
     elif kind == "quadratic":
         c1, c2 = float(beta[1]), float(beta[2])
         v_start, v_end = c1, c1 + 2 * c2 * span
         model["acceleration_mm_yr2"] = 2 * c2
-        label, text = _describe_change(v_start, v_end, thr)
+        label, text = _describe_change(v_start, v_end, thr, line_of_sight)
         model["label"] = label
         narrative.append(
             f"Velocity changes gradually from {_signed(v_start)} to {_signed(v_end)} mm/yr "
@@ -297,7 +323,7 @@ def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float]) -> Opt
         s1 = float(beta[1])
         s2 = s1 + float(beta[2])
         model.update(break_date=iso[chosen["idx"]], slope_before=s1, slope_after=s2)
-        label, text = _describe_change(s1, s2, thr)
+        label, text = _describe_change(s1, s2, thr, line_of_sight)
         model["label"] = label
         narrative.append(
             f"Change in trend around {model['break_date']}: {_signed(s1)} mm/yr before, {_signed(s2)} mm/yr after ({text})."
@@ -337,12 +363,15 @@ def analyze_time_series(dates: Sequence[str], values_mm: Sequence[float]) -> Opt
         "velocity": {
             "ols_mm_yr": v_ols,
             "se_mm_yr": se_ols,
-            "ci95": [v_ols - 1.96 * se_ols, v_ols + 1.96 * se_ols],
+            "ci95": [v_ols - ci_factor * se_ols, v_ols + ci_factor * se_ols],
+            "ci95_factor": ci_factor,
+            "effective_n": n_eff,
             "theil_sen_mm_yr": v_ts,
             "mann_kendall_z": mk_z,
             "mann_kendall_p": mk_p,
             "lag1_autocorr": r1,
         },
+        "line_of_sight": bool(line_of_sight),
         "model": model,
         "seasonal": {"present": bool(ks), "amplitude_mm": amplitude, "peak_month": peak_month},
         "noise": {"rms_mm": rms, "outliers": outliers},

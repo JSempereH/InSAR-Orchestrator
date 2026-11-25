@@ -1,0 +1,111 @@
+{
+  "cases": [
+    {
+      "id": "lorca-desc-2023",
+      "setting": "farmland and a fast-subsiding basin, descending track 8, one year, short pairs plus 24 of about 3 months and one of a year",
+      "work_dir": "downloads/validation-lorca-subsidence-2023/mintpy",
+      "egms": {
+        "destination": "downloads/egms/validation-lorca-egms-desc008",
+        "files": [
+          "EGMS_L2b_008_0852_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_008_0850_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_008_0851_IW2_VV_2020_2024_1.zip"
+        ]
+      },
+      "gnss": true
+    },
+    {
+      "id": "lorca-desc-2023-short-pairs",
+      "setting": "the same basin and track with only the short pairs (up to 36 days), the network the app uses by default",
+      "work_dir": "downloads/validation-lorca-subsidence-2023/.mintpy_before_long_pairs",
+      "egms": {
+        "destination": "downloads/egms/validation-lorca-egms-desc008",
+        "files": [
+          "EGMS_L2b_008_0852_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_008_0850_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_008_0851_IW2_VV_2020_2024_1.zip"
+        ]
+      },
+      "gnss": true
+    },
+    {
+      "id": "lorca-asc-2023",
+      "setting": "the same basin from the ascending track, one year; no L2b EGMS for this track here, only GNSS",
+      "work_dir": "downloads/validation-lorca-ascending-2023/mintpy",
+      "gnss": true
+    },
+    {
+      "id": "madrid-asc-2023",
+      "setting": "city, ascending track 1, one year, against EGMS tile 001",
+      "work_dir": "downloads/validation-vs-egms-2023/mintpy",
+      "egms": {
+        "destination": "downloads/egms/comillas",
+        "files": [
+          "EGMS_L2b_001_0236_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0237_IW2_VV_2020_2024_1.zip"
+        ]
+      },
+      "gnss": true
+    },
+    {
+      "id": "valladolid-default-2023",
+      "setting": "slow farmland control, ascending track 1, one year, short pairs, default processing",
+      "work_dir": "downloads/validation-valladolid-farmland-2023/.mintpy_default",
+      "egms": {
+        "destination": "downloads/egms/validation-valladolid-egms-asc001",
+        "files": [
+          "EGMS_L2b_001_0243_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0244_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0245_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0246_IW2_VV_2020_2024_1.zip"
+        ]
+      },
+      "gnss": true
+    },
+    {
+      "id": "valladolid-fading-2023",
+      "setting": "same data with the closure-phase fading correction on",
+      "work_dir": "downloads/validation-valladolid-farmland-2023/.mintpy_fading_corrected",
+      "egms": {
+        "destination": "downloads/egms/validation-valladolid-egms-asc001",
+        "files": [
+          "EGMS_L2b_001_0243_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0244_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0245_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0246_IW2_VV_2020_2024_1.zip"
+        ]
+      },
+      "gnss": true
+    },
+    {
+      "id": "valladolid-short-2023",
+      "setting": "short pairs only (up to 60 d), default processing",
+      "work_dir": "downloads/validation-valladolid-farmland-2023/.mintpy_short_default",
+      "egms": {
+        "destination": "downloads/egms/validation-valladolid-egms-asc001",
+        "files": [
+          "EGMS_L2b_001_0243_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0244_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0245_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0246_IW2_VV_2020_2024_1.zip"
+        ]
+      },
+      "gnss": true
+    },
+    {
+      "id": "valladolid-short-deramp-2023",
+      "setting": "short pairs only with a linear ramp removed from every date (the area is stable, so no real motion is lost)",
+      "work_dir": "downloads/validation-valladolid-farmland-2023/.mintpy_short_deramp",
+      "egms": {
+        "destination": "downloads/egms/validation-valladolid-egms-asc001",
+        "files": [
+          "EGMS_L2b_001_0243_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0244_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0245_IW2_VV_2020_2024_1.zip",
+          "EGMS_L2b_001_0246_IW2_VV_2020_2024_1.zip"
+        ]
+      },
+      "gnss": true
+    }
+  ]
+}

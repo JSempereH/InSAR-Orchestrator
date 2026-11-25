@@ -5,6 +5,9 @@ import axios from "axios";
 // the backend on localhost:8000 instead. VITE_API_URL overrides both.
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
 
+/** Absolute URL of an API path, for links the browser follows itself (file downloads). */
+export const apiUrl = (path: string) => `${API_BASE_URL}${path}`;
+
 export const api = axios.create({
   baseURL: API_BASE_URL,
   headers: { "Content-Type": "application/json" },
@@ -47,6 +50,7 @@ export interface Project {
   date_start?: string;
   date_end?: string;
   max_temporal_neighbors: number;
+  engine: string;
   storage_path?: string;
   backup_enabled: boolean;
   archived_remote?: string | null;
@@ -73,7 +77,24 @@ export interface ProjectCreate {
   date_start?: string;
   date_end?: string;
   max_temporal_neighbors?: number;
+  engine?: string;
   storage_mountpoint?: string;
+}
+
+export interface EngineInfo {
+  id: string;
+  label: string;
+  sensor: string;
+  band: string;
+  product: string;
+  acquisition: "hyp3_jobs" | "ready_made";
+  description: string;
+  credentials: string[];
+  costs_credits: boolean;
+  mintpy_processor: string;
+  wavelength_m: number;
+  available: boolean;
+  unavailable_reason: string;
 }
 
 export interface StorageTarget {
@@ -116,7 +137,7 @@ export interface Batch {
 export interface BatchParameters {
   processor: string;
   hyp3: Record<string, string | boolean>;
-  pairing: { method: string; max_temporal_neighbors: number };
+  pairing: { method: string; max_temporal_neighbors: number; pb_max?: number | null; min_degree?: number; max_degree?: number };
   search: { track_number?: number | null; flight_direction?: string | null; date_start?: string | null; date_end?: string | null };
   software: Record<string, string | null>;
   app_version: string;
@@ -146,6 +167,8 @@ export interface Provenance {
   app_version: string;
   archived: boolean;
   project: Record<string, unknown>;
+  engine?: { id: string; label?: string; sensor?: string; band?: string };
+  nisar_granules?: { file_name: string; reference_date: string; secondary_date: string; size_bytes: number }[];
   batches: {
     id: string; label: string | null; created_at: string | null; total_pairs: number;
     status: string; auto_download: boolean; parameters: BatchParameters | null;
@@ -210,11 +233,57 @@ export interface SLCDownload {
   created_at: string;
 }
 
+export interface PlannedPair {
+  reference: string;
+  secondary: string;
+  reference_date: string;
+  secondary_date: string;
+  temporal_days: number;
+  perpendicular_m: number | null;
+  over_limit: boolean;
+  reason: string;
+  state: "new" | "submitted" | "excluded";
+}
+
+export interface PlannedScene {
+  granule: string;
+  date: string;
+  perpendicular_m: number | null;
+}
+
 export interface BatchPlan {
   total_pairs: number;
   scene_count: number;
   pairs_preview: [string, string][];
   estimated_size_gb?: number;
+  strategy: "neighbors" | "baseline";
+  credits: number;
+  /** What one interferogram costs: 10 for a whole scene at 80 m, 1 for up to four bursts. */
+  credits_per_pair?: number;
+  connected: boolean;
+  components: number;
+  over_limit: number;
+  warnings: string[];
+  pairs: PlannedPair[];
+  scenes: PlannedScene[];
+}
+
+/** How the pairs are chosen. Everything is optional: the defaults are the plain "next N dates" rule. */
+export interface PairSettings {
+  strategy?: "neighbors" | "baseline";
+  max_temporal_neighbors?: number;
+  /** Neighbors strategy: spans in days of the long pairs. Left out or [] means none. */
+  long_pairs_days?: number[];
+  /** Neighbors strategy: one pair over the whole period, to fix the constants of the fading bias correction. */
+  calibration_pair?: boolean;
+  dt_targets?: number[] | null;
+  dt_tolerance?: number;
+  dt_max?: number | null;
+  pb_max?: number | null;
+  min_degree?: number;
+  max_degree?: number;
+  include_annual?: boolean;
+  exclude?: [string, string][];
 }
 
 export interface DownloadProgress {
@@ -405,15 +474,14 @@ export const slcApi = {
 export const jobsApi = {
   plan: (
     projectId: string,
-    body: { max_temporal_neighbors?: number; label?: string; dry_run: true }
+    body: PairSettings & { label?: string; dry_run: true }
   ) =>
     api
       .post<BatchPlan>(`/api/projects/${projectId}/batches/plan`, body)
       .then((r) => r.data),
   submit: (
     projectId: string,
-    body: {
-      max_temporal_neighbors?: number;
+    body: PairSettings & {
       label?: string;
       dry_run: false;
       auto_download?: boolean;
@@ -470,14 +538,271 @@ export interface MintPyStatus {
   warnings?: string[];
 }
 
+export interface MintPyOption {
+  key: string;
+  label: string;
+  kind: "choice" | "count" | "length" | "fraction";
+  group: string;
+  help: string;
+  choices?: string[];
+  default: string;
+}
+
+export interface MintPyOptions {
+  options: MintPyOption[];
+  last_run: Record<string, string>;
+  last_reference: string | null;
+}
+
+export interface MintPyRunRequest {
+  options?: Record<string, string>;
+  reference?: { lat: number; lon: number } | null;
+}
+
+export type CheckStatus = "ok" | "warn" | "fail";
+
+export interface QualityCheck {
+  id: string;
+  label: string;
+  value: number | string;
+  unit: string;
+  status: CheckStatus;
+  message: string;
+}
+
+export interface MintPyQuality {
+  status: CheckStatus | "unknown";
+  checks: QualityCheck[];
+  metrics: {
+    velocity_std_mm_yr_median?: number;
+    /** How well a difference of velocity is known against the distance between the two points. */
+    velocity_uncertainty?: {
+      summary: string;
+      at: { distance_km: number; sigma_mm_yr: number; observed_mm_yr: number }[];
+    };
+  };
+}
+
+export type ExportFormat = "geotiff" | "netcdf" | "csv" | "gpkg";
+
+export const enginesApi = {
+  list: () => api.get<EngineInfo[]>("/api/engines").then((r) => r.data),
+};
+
+export interface NisarGranule {
+  file_name: string;
+  reference_date: string;
+  secondary_date: string;
+  temporal_days: number;
+  size_bytes: number | null;
+  processing_date: string;
+  downloaded: boolean;
+}
+
+export interface NisarStack {
+  track_number: number;
+  frame: number;
+  flight_direction: string;
+  polarization: string;
+  range_bandwidth: string;
+  frame_coverage: string;
+  dates: string[];
+  connected: boolean;
+  granules: NisarGranule[];
+}
+
+export interface NisarQueueState {
+  active: boolean;
+  current_filename: string | null;
+  pending_count: number;
+  total: number;
+  done: number;
+  progress: { pct?: number; downloaded_bytes?: number; total_bytes?: number; speed_bps?: number } | null;
+}
+
+export const nisarApi = {
+  stacks: (projectId: string) => api.get<NisarStack[]>(`/api/projects/${projectId}/nisar/stacks`).then((r) => r.data),
+  download: (projectId: string, fileNames: string[]) =>
+    api.post<{ queued: number; already_downloaded: number }>(`/api/projects/${projectId}/nisar/downloads/queue`, { file_names: fileNames }).then((r) => r.data),
+  queue: () => api.get<NisarQueueState>("/api/nisar/downloads/queue").then((r) => r.data),
+  cancel: () => api.delete("/api/nisar/downloads/queue").then((r) => r.data),
+};
+
 export const mintpyApi = {
-  run: (projectId: string) => api.post<MintPyStatus>(`/api/projects/${projectId}/mintpy/run`).then((r) => r.data),
+  run: (projectId: string, body?: MintPyRunRequest) =>
+    api.post<MintPyStatus>(`/api/projects/${projectId}/mintpy/run`, body ?? {}).then((r) => r.data),
+  options: (projectId: string) =>
+    api.get<MintPyOptions>(`/api/projects/${projectId}/mintpy/options`).then((r) => r.data),
+  quality: (projectId: string) =>
+    api.get<MintPyQuality>(`/api/projects/${projectId}/mintpy/quality`).then((r) => r.data),
+  exportUrl: (projectId: string, format: ExportFormat, params: { layer?: string; masked?: boolean; series?: boolean } = {}) => {
+    const query = new URLSearchParams({ format });
+    if (params.layer) query.set("layer", params.layer);
+    if (params.masked === false) query.set("masked", "false");
+    if (params.series === false) query.set("series", "false");
+    return apiUrl(`/api/projects/${projectId}/mintpy/export?${query.toString()}`);
+  },
+  /** The report of the results as one HTML page (opens in a tab and prints to PDF). */
+  reportUrl: (projectId: string, download = false) => apiUrl(`/api/projects/${projectId}/mintpy/report${download ? "?download=true" : ""}`),
   status: (projectId: string) => api.get<MintPyStatus>(`/api/projects/${projectId}/mintpy/status`).then((r) => r.data),
   cancel: (projectId: string) => api.delete<MintPyStatus>(`/api/projects/${projectId}/mintpy`).then((r) => r.data),
   getTimeSeries: (projectId: string, lat: number, lon: number) =>
     api.get<TimeSeries>(`/api/projects/${projectId}/mintpy/timeseries`, { params: { lat, lon } }).then((r) => r.data),
   getPoints: (projectId: string) =>
     api.get<GeoJSON.FeatureCollection>(`/api/projects/${projectId}/mintpy/points`).then((r) => r.data),
+};
+
+export interface ValidationStats {
+  n: number;
+  bias_mm_yr: number;
+  rmse_mm_yr: number;
+  mad_mm_yr: number;
+  pearson_r: number | null;
+  slope_b_on_a: number | null;
+  /** Slope allowing for noise in both sources (orthogonal regression); missing in results computed before it existed. */
+  slope_orthogonal?: number | null;
+  std_a: number;
+  std_b: number;
+}
+
+export interface ValidationBand {
+  from: number | null;
+  to: number | null;
+  n: number;
+  other_mm_yr: number;
+  mintpy_mm_yr: number;
+  bias_mm_yr: number;
+  rmse_mm_yr: number;
+}
+
+export interface GnssStationResult {
+  name: string;
+  lat: number;
+  lon: number;
+  dates: number;
+  window: [string, string];
+  gnss_mm_yr: number;
+  insar_mm_yr: number;
+  series_rmse_mm: number;
+  difference_rereferenced_mm_yr?: number;
+  frame?: string;
+  /** Share of MintPy's dates the station has a position for (0 to 1). */
+  coverage?: number;
+  /** Known steps of the station inside the period, and what was done with each. */
+  steps?: GnssStep[];
+  /** The Nevada Geodetic Laboratory's own velocity over the station's whole record (mm/year). */
+  ngl_midas?: { east: number; north: number; up: number; sigma_up: number; years: number; steps: number } | null;
+}
+
+export interface GnssStep {
+  date: string;
+  kind: "equipment" | "earthquake";
+  detail: string;
+  action: "removed" | "trimmed" | "kept";
+  jump_mm: [number, number, number] | null;
+}
+
+/** The tectonic plate whose motion was taken out of the GNSS velocities (ITRF2014 plate motion model). */
+export interface PlateFrame {
+  plate: string;
+  name: string;
+  misfit_mm_yr: number | null;
+  rigid: boolean;
+}
+
+/** How far MintPy's stated standard error can be trusted, measured against an independent source. */
+export interface UncertaintyCheck {
+  n: number;
+  scale: number;
+  recommended_scale: number;
+  median_stated_sigma_mm_yr: number;
+  median_observed_spread_mm_yr: number;
+  coverage_1sigma: number;
+  coverage_2sigma: number;
+  coverage_1sigma_scaled: number;
+  coverage_2sigma_scaled: number;
+  message: string;
+}
+
+export interface CalibrationStation {
+  name: string;
+  dates: number;
+  gnss_mm_yr: number;
+  insar_mm_yr: number;
+  difference_mm_yr: number;
+  residual_mm_yr: number;
+  left_out_residual_mm_yr?: number;
+  /** How the station velocity was estimated: MIDAS with two years or more, a straight line otherwise. */
+  method?: "midas" | "least_squares" | null;
+}
+
+/** The shift that ties a velocity map to GNSS stations, tested on stations it had not seen. */
+export interface GnssCalibration {
+  quantity?: "los" | "up" | "east";
+  n: number;
+  applied: boolean;
+  error?: string;
+  offset_mm_yr?: number;
+  offset_sigma_mm_yr?: number;
+  reduced_chi2?: number | null;
+  rmse_before_mm_yr?: number;
+  loo_rmse_after_mm_yr?: number | null;
+  frame_removed_mm_yr?: { east: number; north: number } | null;
+  frame?: "stations" | "plate" | null;
+  plate?: PlateFrame | null;
+  verdict?: { status: CheckStatus; message: string };
+  stations?: CalibrationStation[];
+}
+
+export interface ValidationResult {
+  source: "points" | "gnss" | "grid";
+  uncertainty?: UncertaintyCheck;
+  calibration?: GnssCalibration;
+  source_name: string;
+  verdict: { status: CheckStatus; message: string };
+  warnings?: string[];
+  computed_at: string;
+  window?: [string, string];
+  dates?: number;
+  pixels?: number;
+  points?: number;
+  points_per_pixel_median?: number;
+  velocity_raw: ValidationStats;
+  velocity_rereferenced?: ValidationStats;
+  timeseries_rmse_mm?: { median: number; p90: number };
+  noise_mm_yr_within_pixel?: number;
+  by_velocity?: ValidationBand[];
+  scatter?: { other: number[]; mintpy: number[] };
+  stations?: GnssStationResult[];
+  stations_found?: number;
+  stations_skipped?: string[];
+  plate?: PlateFrame | null;
+  citations?: string[];
+  citation?: string;
+  release?: string;
+  files?: string[];
+}
+
+export interface ValidationEntry {
+  status: "NOT_RUN" | "RUNNING" | "FAILED" | "SUCCEEDED";
+  progress?: string;
+  error?: string;
+  stale?: boolean;
+  result?: ValidationResult;
+}
+
+export interface ValidationStatus {
+  egms: ValidationEntry;
+  gnss: ValidationEntry;
+}
+
+export const validationApi = {
+  status: (projectId: string) =>
+    api.get<ValidationStatus>(`/api/projects/${projectId}/validation`).then((r) => r.data),
+  startEgms: (projectId: string, downloadId: string) =>
+    api.post<ValidationStatus>(`/api/projects/${projectId}/validation/egms`, { download_id: downloadId }).then((r) => r.data),
+  startGnss: (projectId: string) =>
+    api.post<ValidationStatus>(`/api/projects/${projectId}/validation/gnss`).then((r) => r.data),
 };
 
 export const downloadQueueApi = {
@@ -547,4 +872,82 @@ export const backupApi = {
   test: (destination: string) =>
     api.post<{ ok: boolean; destination: string }>("/api/backup/test", { destination }).then((r) => r.data),
   run: () => api.post("/api/backup/run").then((r) => r.data),
+};
+
+
+// ── Vertical and east-west from two tracks ────────────────────────────────
+
+export interface DecompositionProject {
+  id: string;
+  name: string | null;
+  exists: boolean;
+}
+
+export interface DecompositionSummary {
+  ascending: { label: string; start: string; end: string };
+  descending: { label: string; start: string; end: string };
+  reference: { lat: number; lon: number; row: number; column: number };
+  pixels: number;
+  masked_for_geometry: number;
+  median_condition_number: number;
+  north_leakage: { into_vertical: number; into_east: number };
+  vertical_std_median_mm_yr: number | null;
+  east_std_median_mm_yr: number | null;
+  assumptions: string[];
+}
+
+export interface DecompositionL3Result {
+  source_name: string;
+  release?: string;
+  window_note: string;
+  vertical?: ValidationResult & { error?: string };
+  east?: ValidationResult & { error?: string };
+}
+
+export interface DecompositionGnssResult {
+  source_name: string;
+  citation: string;
+  window: [string, string];
+  stations_found: number;
+  stations_skipped: string[];
+  stations_without_enough_data: string[];
+  vertical?: GnssCalibration;
+  east?: GnssCalibration;
+}
+
+export interface DecompositionCheck<T> {
+  status: "NOT_RUN" | "RUNNING" | "FAILED" | "SUCCEEDED";
+  progress?: string;
+  error?: string;
+  result?: T;
+}
+
+export interface DecompositionBrief {
+  id: string;
+  name: string;
+  created_at: string | null;
+  ascending: DecompositionProject;
+  descending: DecompositionProject;
+  pixels: number | null;
+  reference: { lat: number; lon: number } | null;
+}
+
+export interface Decomposition extends DecompositionBrief {
+  summary: DecompositionSummary;
+  stale: boolean;
+  products_available: boolean;
+  checks: { l3: DecompositionCheck<DecompositionL3Result>; gnss: DecompositionCheck<DecompositionGnssResult> };
+}
+
+export const decompositionApi = {
+  list: () => api.get<DecompositionBrief[]>("/api/decompositions").then((r) => r.data),
+  get: (id: string) => api.get<Decomposition>(`/api/decompositions/${id}`).then((r) => r.data),
+  create: (body: { first_project_id: string; second_project_id: string; name?: string; reference?: { lat: number; lon: number } }) =>
+    api.post<Decomposition>("/api/decompositions", body).then((r) => r.data),
+  remove: (id: string) => api.delete(`/api/decompositions/${id}`).then((r) => r.data),
+  previewUrl: (id: string, version?: string) => apiUrl(`/api/decompositions/${id}/preview.png${version ? `?v=${encodeURIComponent(version)}` : ""}`),
+  exportUrl: (id: string, layer: string) => apiUrl(`/api/decompositions/${id}/export?layer=${encodeURIComponent(layer)}`),
+  validateL3: (id: string, upDownloadId: string, eastDownloadId: string) =>
+    api.post<Decomposition>(`/api/decompositions/${id}/validation/l3`, { up_download_id: upDownloadId, east_download_id: eastDownloadId }).then((r) => r.data),
+  validateGnss: (id: string) => api.post<Decomposition>(`/api/decompositions/${id}/validation/gnss`).then((r) => r.data),
 };

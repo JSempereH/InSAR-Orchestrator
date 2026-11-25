@@ -18,7 +18,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import Base, engine, SessionLocal
 from app import auth
-from app.routers import archive, backup, batches, credentials, egms, jobs, mintpy, projects, scenes, slc, storage
+from app.routers import archive, backup, batches, credentials, decomposition, egms, engines, jobs, mintpy, nisar, projects, scenes, slc, storage, validation
 from app.models import Batch
 from app.services import backup_service, credits_service
 from app.services.polling_service import poll_active_jobs, force_poll
@@ -31,53 +31,40 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# (table, column, DDL of the column) added after the first release. There is no Alembic here and
+# create_all only creates missing tables, so these are added on start when absent.
+_ADDED_COLUMNS = [
+    ("projects", "storage_path", "VARCHAR"),
+    ("projects", "backup_enabled", "BOOLEAN DEFAULT TRUE NOT NULL"),
+    ("projects", "archived_remote", "VARCHAR"),
+    ("projects", "archived_at", "TIMESTAMP"),
+    ("projects", "engine", "VARCHAR DEFAULT 'hyp3_gamma' NOT NULL"),
+    ("backup_config", "include_slc", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("batches", "status", "VARCHAR DEFAULT 'done' NOT NULL"),      # existing batches finished submitting by definition
+    ("batches", "auto_download", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("batches", "pending_pairs", "JSON"),
+    ("batches", "parameters", "JSON"),
+    ("batches", "run_mintpy_when_done", "BOOLEAN DEFAULT FALSE NOT NULL"),
+]
+
+
 def _migrate_schema() -> None:
-    """Add columns introduced after the initial create_all, since there's no
-    Alembic in this project and create_all only creates missing tables."""
-    with engine.connect() as conn:
-        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(projects)"))}
-        if "storage_path" not in cols:
-            conn.execute(text("ALTER TABLE projects ADD COLUMN storage_path VARCHAR"))
-            conn.commit()
-        if "backup_enabled" not in cols:
-            conn.execute(text("ALTER TABLE projects ADD COLUMN backup_enabled BOOLEAN DEFAULT 1 NOT NULL"))
-            conn.commit()
-        if "archived_remote" not in cols:
-            conn.execute(text("ALTER TABLE projects ADD COLUMN archived_remote VARCHAR"))
-            conn.commit()
-        if "archived_at" not in cols:
-            conn.execute(text("ALTER TABLE projects ADD COLUMN archived_at DATETIME"))
-            conn.commit()
+    """Add the columns and indexes introduced after the initial create_all.
 
-        backup_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(backup_config)"))}
-        if backup_cols and "include_slc" not in backup_cols:
-            conn.execute(text("ALTER TABLE backup_config ADD COLUMN include_slc BOOLEAN DEFAULT 0 NOT NULL"))
-            conn.commit()
+    Uses SQLAlchemy's inspector rather than SQLite's PRAGMA, so it also runs on the
+    other databases DATABASE_URL can point to."""
+    from sqlalchemy import inspect
 
-        batch_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(batches)"))}
-        if "status" not in batch_cols:
-            # Existing batches already finished submitting by definition.
-            conn.execute(text("ALTER TABLE batches ADD COLUMN status VARCHAR DEFAULT 'done' NOT NULL"))
-            conn.commit()
-        if "auto_download" not in batch_cols:
-            conn.execute(text("ALTER TABLE batches ADD COLUMN auto_download BOOLEAN DEFAULT 0 NOT NULL"))
-            conn.commit()
-        if "pending_pairs" not in batch_cols:
-            conn.execute(text("ALTER TABLE batches ADD COLUMN pending_pairs JSON"))
-            conn.commit()
-        if "parameters" not in batch_cols:
-            conn.execute(text("ALTER TABLE batches ADD COLUMN parameters JSON"))
-            conn.commit()
-        if "run_mintpy_when_done" not in batch_cols:
-            conn.execute(text("ALTER TABLE batches ADD COLUMN run_mintpy_when_done BOOLEAN DEFAULT 0 NOT NULL"))
-            conn.commit()
-
-        # Column(index=True) only takes effect via create_all for a table
-        # that doesn't exist yet - these two were added to already-live
-        # tables, so the index needs creating explicitly here too.
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table, column, ddl in _ADDED_COLUMNS:
+            if not inspector.has_table(table):
+                continue
+            if column not in {c["name"] for c in inspector.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+        # Column(index=True) only takes effect via create_all for a table that does not exist yet.
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_batches_project_id ON batches (project_id)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_jobs_batch_id ON jobs (batch_id)"))
-        conn.commit()
 
 
 Base.metadata.create_all(bind=engine)
@@ -90,13 +77,9 @@ if not settings.app_password:
         "(backend/.env) before exposing it any further."
     )
 
-if not settings.secret_key:
-    logger.warning(
-        "SECRET_KEY is not set (backend/.env). A key is generated in memory for this "
-        "process only, so any stored credentials (Earthdata, EGMS) "
-        "will fail to decrypt after a restart. Run ../setup.sh or set SECRET_KEY "
-        "yourself before relying on this outside local development."
-    )
+from app.services import crypto  # noqa: E402
+
+crypto.validate_key()
 
 app = FastAPI(title="InSAR Orchestrator API", version="0.2.0")
 
@@ -120,6 +103,10 @@ app.include_router(storage.router)
 app.include_router(egms.router)
 app.include_router(slc.router)
 app.include_router(mintpy.router)
+app.include_router(validation.router)
+app.include_router(decomposition.router)
+app.include_router(nisar.router)
+app.include_router(engines.router)
 app.include_router(backup.router)
 app.include_router(archive.router)
 app.include_router(auth.router)
@@ -135,13 +122,23 @@ async def _recover_after_restart() -> None:
         logger.exception("Startup recovery failed")
 
 
+_background_tasks: set[asyncio.Task] = set()   # the event loop keeps only weak references to tasks
+
+
+def _spawn(coroutine) -> None:
+    task = asyncio.create_task(coroutine)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(poll_active_jobs())
-    asyncio.create_task(credits_service.poll_credits())
-    asyncio.create_task(backup_service.backup_scheduler())
+    if settings.background_tasks:
+        _spawn(poll_active_jobs())
+        _spawn(credits_service.poll_credits())
+        _spawn(backup_service.backup_scheduler())
     if settings.recover_on_startup:
-        asyncio.create_task(_recover_after_restart())
+        _spawn(_recover_after_restart())
 
 
 @app.get("/api/health")
@@ -208,6 +205,9 @@ class _ConnectionManager:
         conns = self._connections.get(batch_id, [])
         if ws in conns:
             conns.remove(ws)
+        if not conns:
+            self._connections.pop(batch_id, None)
+            _snapshot_cache.pop(batch_id, None)     # nobody is watching this batch any more
 
 
 manager = _ConnectionManager()
@@ -225,6 +225,7 @@ async def batch_status_ws(websocket: WebSocket, batch_id: str):
         snapshot = _fetch_batch_snapshot(batch_id)
         if snapshot is None:
             await websocket.send_json({"error": "Batch not found"})
+            await websocket.close()
             return
         await websocket.send_json(snapshot)
 
@@ -234,7 +235,9 @@ async def batch_status_ws(websocket: WebSocket, batch_id: str):
             if snapshot is not None:
                 await websocket.send_json(snapshot)
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        pass                                     # the client left, or the socket closed under us
+    finally:
         manager.disconnect(batch_id, websocket)
 
 
@@ -257,6 +260,7 @@ def _fetch_batch_snapshot(batch_id: str) -> Optional[dict]:
     try:
         batch = db.query(Batch).filter_by(id=batch_id).first()
         if not batch:
+            _snapshot_cache.pop(batch_id, None)
             return None
         snapshot = _batch_snapshot_dict(batch)
     finally:

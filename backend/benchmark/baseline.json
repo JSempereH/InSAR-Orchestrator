@@ -1,0 +1,322 @@
+{
+  "lorca-desc-2023": {
+    "numbers": {
+      "egms.rmse_mm_yr": 3.658,
+      "egms.mad_mm_yr": 2.227,
+      "egms.pearson_r": 0.9206,
+      "egms.slope_b_on_a": 0.8618,
+      "egms.stable_rmse_mm_yr": 3.001,
+      "egms.band[None,-30.0].band_bias_mm_yr": 2.43,
+      "egms.band[-30.0,-20.0].band_bias_mm_yr": 2.56,
+      "egms.band[-20.0,-10.0].band_bias_mm_yr": 2.33,
+      "egms.band[-10.0,-3.0].band_bias_mm_yr": 3.02,
+      "egms.band[-3.0,3.0].band_bias_mm_yr": 0.26,
+      "egms.band[3.0,10.0].band_bias_mm_yr": -3.58,
+      "egms.band[10.0,20.0].band_bias_mm_yr": -13.69,
+      "gnss.LOR1.gnss_insar_mm_yr": -14.05,
+      "gnss.LRC1.gnss_insar_mm_yr": -6.44,
+      "precision.sigma_10km_mm_yr": 2.97
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "reference_pixel": "ok",
+      "steep_phase": "warn",
+      "fading_bias": "warn"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 112,
+        "used": 112,
+        "longest_used_days": 360
+      },
+      "unwrap_correction": true,
+      "fading_correction": false,
+      "mask_refinement": false
+    },
+    "recorded_at": "2026-11-23T10:20:06.417560+00:00"
+  },
+  "lorca-desc-2023-short-pairs": {
+    "numbers": {
+      "egms.rmse_mm_yr": 4.147,
+      "egms.mad_mm_yr": 2.561,
+      "egms.pearson_r": 0.9033,
+      "egms.slope_b_on_a": 0.9274,
+      "egms.stable_rmse_mm_yr": 3.623,
+      "egms.band[None,-30.0].band_bias_mm_yr": 0.98,
+      "egms.band[-30.0,-20.0].band_bias_mm_yr": 0.84,
+      "egms.band[-20.0,-10.0].band_bias_mm_yr": 0.41,
+      "egms.band[-10.0,-3.0].band_bias_mm_yr": 1.75,
+      "egms.band[-3.0,3.0].band_bias_mm_yr": 0.41,
+      "egms.band[3.0,10.0].band_bias_mm_yr": -3.58,
+      "egms.band[10.0,20.0].band_bias_mm_yr": -15.14,
+      "gnss.LOR1.gnss_insar_mm_yr": -26.71,
+      "gnss.LRC1.gnss_insar_mm_yr": -3.6,
+      "precision.sigma_10km_mm_yr": 2.97
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "reference_pixel": "ok",
+      "fading_bias": "warn"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 87,
+        "used": 87,
+        "longest_used_days": 36
+      },
+      "unwrap_correction": false,
+      "fading_correction": false,
+      "mask_refinement": false
+    },
+    "recorded_at": "2026-11-23T10:27:42.462362+00:00"
+  },
+  "lorca-asc-2023": {
+    "numbers": {
+      "gnss.LOR1.gnss_insar_mm_yr": -45.31,
+      "gnss.LRC1.gnss_insar_mm_yr": -9.81,
+      "precision.sigma_10km_mm_yr": 6.58
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "residual_outlier_dates": "warn",
+      "reference_pixel": "ok",
+      "fading_bias": "warn"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 87,
+        "used": 87,
+        "longest_used_days": 36
+      },
+      "unwrap_correction": false,
+      "fading_correction": false,
+      "mask_refinement": false
+    },
+    "recorded_at": "2026-11-23T10:35:13.721300+00:00"
+  },
+  "madrid-asc-2023": {
+    "numbers": {
+      "egms.rmse_mm_yr": 1.472,
+      "egms.mad_mm_yr": 1.005,
+      "egms.pearson_r": 0.1147,
+      "egms.slope_b_on_a": 0.1332,
+      "egms.stable_rmse_mm_yr": 1.417,
+      "egms.band[-10.0,-3.0].band_bias_mm_yr": 2.69,
+      "egms.band[-3.0,3.0].band_bias_mm_yr": -0.13,
+      "egms.band[3.0,10.0].band_bias_mm_yr": -3.51
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "reference_pixel": "ok",
+      "fading_bias": "ok"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 87,
+        "used": 87,
+        "longest_used_days": 36
+      },
+      "unwrap_correction": true,
+      "fading_correction": false,
+      "mask_refinement": true
+    },
+    "recorded_at": "2026-11-23T10:35:37.177005+00:00"
+  },
+  "valladolid-default-2023": {
+    "numbers": {
+      "egms.rmse_mm_yr": 7.187,
+      "egms.mad_mm_yr": 5.267,
+      "egms.pearson_r": 0.03,
+      "egms.slope_b_on_a": 0.0619,
+      "egms.stable_rmse_mm_yr": 6.605,
+      "egms.band[-20.0,-10.0].band_bias_mm_yr": 10.77,
+      "egms.band[-10.0,-3.0].band_bias_mm_yr": 4.18,
+      "egms.band[-3.0,3.0].band_bias_mm_yr": 0.32,
+      "egms.band[3.0,10.0].band_bias_mm_yr": -5.13,
+      "egms.band[10.0,20.0].band_bias_mm_yr": -13.9,
+      "gnss.ARDU.gnss_insar_mm_yr": -10.53,
+      "gnss.PEN1.gnss_insar_mm_yr": 0.85,
+      "precision.sigma_10km_mm_yr": 2.96
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "residual_outlier_dates": "warn",
+      "reference_pixel": "ok",
+      "steep_phase": "fail",
+      "date_ramps": "warn",
+      "fading_bias": "warn"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 88,
+        "used": 88,
+        "longest_used_days": 360
+      },
+      "unwrap_correction": true,
+      "fading_correction": false,
+      "mask_refinement": false
+    },
+    "recorded_at": "2026-11-24T16:10:38.760296+00:00"
+  },
+  "valladolid-fading-2023": {
+    "numbers": {
+      "egms.rmse_mm_yr": 7.574,
+      "egms.mad_mm_yr": 5.502,
+      "egms.pearson_r": 0.0225,
+      "egms.slope_b_on_a": 0.0486,
+      "egms.stable_rmse_mm_yr": 7.019,
+      "egms.band[-20.0,-10.0].band_bias_mm_yr": 12.08,
+      "egms.band[-10.0,-3.0].band_bias_mm_yr": 5.44,
+      "egms.band[-3.0,3.0].band_bias_mm_yr": 0.95,
+      "egms.band[3.0,10.0].band_bias_mm_yr": -3.59,
+      "egms.band[10.0,20.0].band_bias_mm_yr": -11.1,
+      "gnss.ARDU.gnss_insar_mm_yr": -14.37,
+      "gnss.PEN1.gnss_insar_mm_yr": -8.19,
+      "precision.sigma_10km_mm_yr": 3.28
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "residual_outlier_dates": "warn",
+      "reference_pixel": "ok",
+      "date_ramps": "warn",
+      "fading_bias": "warn"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 88,
+        "used": 87,
+        "longest_used_days": 36
+      },
+      "unwrap_correction": true,
+      "fading_correction": true,
+      "mask_refinement": false
+    },
+    "recorded_at": "2026-11-24T16:16:36.594578+00:00"
+  },
+  "valladolid-short-2023": {
+    "numbers": {
+      "egms.rmse_mm_yr": 6.844,
+      "egms.mad_mm_yr": 5.003,
+      "egms.pearson_r": -0.0039,
+      "egms.slope_b_on_a": -0.0075,
+      "egms.stable_rmse_mm_yr": 6.164,
+      "egms.band[-20.0,-10.0].band_bias_mm_yr": 11.73,
+      "egms.band[-10.0,-3.0].band_bias_mm_yr": 5.04,
+      "egms.band[-3.0,3.0].band_bias_mm_yr": 0.43,
+      "egms.band[3.0,10.0].band_bias_mm_yr": -4.64,
+      "egms.band[10.0,20.0].band_bias_mm_yr": -12.83,
+      "gnss.ARDU.gnss_insar_mm_yr": -14.21,
+      "gnss.PEN1.gnss_insar_mm_yr": -5.41,
+      "precision.sigma_10km_mm_yr": 2.97
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "residual_outlier_dates": "warn",
+      "reference_pixel": "ok",
+      "date_ramps": "warn",
+      "fading_bias": "warn"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 88,
+        "used": 87,
+        "longest_used_days": 36
+      },
+      "unwrap_correction": true,
+      "fading_correction": false,
+      "mask_refinement": true
+    },
+    "recorded_at": "2026-11-24T16:17:25.750366+00:00"
+  },
+  "valladolid-short-deramp-2023": {
+    "numbers": {
+      "egms.rmse_mm_yr": 5.121,
+      "egms.mad_mm_yr": 3.195,
+      "egms.pearson_r": 0.134,
+      "egms.slope_b_on_a": 0.188,
+      "egms.stable_rmse_mm_yr": 4.553,
+      "egms.band[-20.0,-10.0].band_bias_mm_yr": 10.06,
+      "egms.band[-10.0,-3.0].band_bias_mm_yr": 3.87,
+      "egms.band[-3.0,3.0].band_bias_mm_yr": 0.47,
+      "egms.band[3.0,10.0].band_bias_mm_yr": -4.27,
+      "egms.band[10.0,20.0].band_bias_mm_yr": -12.85,
+      "gnss.ARDU.gnss_insar_mm_yr": -0.86,
+      "gnss.PEN1.gnss_insar_mm_yr": 2.25,
+      "precision.sigma_10km_mm_yr": 2.79
+    },
+    "qc": {
+      "network_connected": "ok",
+      "coherence": "ok",
+      "valid_pixels": "ok",
+      "temporal_coherence": "ok",
+      "ifgrams_per_pixel": "ok",
+      "time_span": "ok",
+      "unwrapping": "ok",
+      "residual_rms": "ok",
+      "residual_outlier_dates": "warn",
+      "reference_pixel": "ok",
+      "date_ramps": "ok",
+      "fading_bias": "warn"
+    },
+    "process": {
+      "interferograms": {
+        "in_stack": 88,
+        "used": 87,
+        "longest_used_days": 36
+      },
+      "unwrap_correction": true,
+      "fading_correction": false,
+      "mask_refinement": true
+    },
+    "recorded_at": "2026-11-24T16:18:20.351402+00:00"
+  }
+}

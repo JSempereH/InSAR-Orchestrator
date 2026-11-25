@@ -1,8 +1,13 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { mintpyApi } from "../../api/client";
 import { LoadingDots } from "../LoadingDots";
 import { ProcessingDetails } from "./ProcessingDetails";
+import { ExportMenu } from "./ExportMenu";
+import { MintPyOptionsForm, NO_CHOICES, RunChoices, toRequest } from "./MintPyOptions";
+import { QualityChecks } from "./QualityChecks";
+import { ValidationPanel } from "./ValidationPanel";
 
 interface MintPyPanelProps {
   projectId: string;
@@ -56,10 +61,14 @@ export function MintPyPanel({ projectId, onOpenViewer }: MintPyPanelProps) {
   });
 
   const succeeded = status?.status === "SUCCEEDED";
+  const [choices, setChoices] = useState<RunChoices>(NO_CHOICES);
 
   const runMut = useMutation({
-    mutationFn: () => mintpyApi.run(projectId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["mintpy-status", projectId] }),
+    mutationFn: () => mintpyApi.run(projectId, toRequest(choices)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["mintpy-status", projectId] });
+      qc.invalidateQueries({ queryKey: ["validation", projectId] });
+    },
   });
 
   const cancelMut = useMutation({
@@ -100,6 +109,8 @@ export function MintPyPanel({ projectId, onOpenViewer }: MintPyPanelProps) {
           </button>
         )}
       </div>
+
+      {!isRunning && <MintPyOptionsForm projectId={projectId} value={choices} onChange={setChoices} />}
 
       {runMut.isError && (
         <div style={{ marginTop: 10, fontSize: 12, color: "var(--danger)" }}>
@@ -199,6 +210,14 @@ export function MintPyPanel({ projectId, onOpenViewer }: MintPyPanelProps) {
             Open in viewer
           </button>
         </div>
+      )}
+
+      {succeeded && (
+        <>
+          <QualityChecks projectId={projectId} finishedAt={status?.finished_at} />
+          <ExportMenu projectId={projectId} />
+          <ValidationPanel projectId={projectId} />
+        </>
       )}
 
       <ProcessingDetails projectId={projectId} />

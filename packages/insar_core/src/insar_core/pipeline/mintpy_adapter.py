@@ -115,6 +115,8 @@ Bbox = tuple[float, float, float, float]
 _NEEDED_TIF_SUFFIXES = (
     "unw_phase.tif", "corr.tif", "dem.tif",
     "lv_theta.tif", "lv_phi.tif", "water_mask.tif",
+    # only in burst products (ISCE2): the connected components of the unwrapping, see engines.HyP3BurstEngine
+    "conncomp.tif",
 )
 
 
@@ -328,11 +330,19 @@ def _extract_and_crop(zip_path: Path, member: str, dest_dir: Path, bbox: Bbox) -
 class MintPyAdapter:
     """Prepare HyP3 interferogram downloads for MintPy SBAS processing."""
 
-    def __init__(self, downloads_dir: Path, work_dir: Path):
+    def __init__(self, downloads_dir: Path, work_dir: Path, engine=None):
+        from insar_core.engines import get_engine
+
         self.downloads_dir = Path(downloads_dir)
         self.work_dir = Path(work_dir)
+        # What produced the interferograms; decides what is prepared and how MintPy loads them.
+        self.engine = engine if engine is not None else get_engine(None)
         # Where the ERA5 weather files come from ("arco", "cds" or None); see era5_source().
         self.era5_source: Optional[str] = None
+
+    def prepare_inputs(self, geometry: Optional[dict] = None) -> int:
+        """Get the downloads into the shape MintPy reads, as the engine that made them requires."""
+        return self.engine.prepare_inputs(self, geometry)
 
     def unzip_all(self, geometry: Optional[dict] = None) -> int:
         """Decompress the interferogram files MintPy actually needs (see
@@ -461,14 +471,8 @@ class MintPyAdapter:
         self.work_dir.mkdir(parents=True, exist_ok=True)
         data_dir = self.downloads_dir.resolve()
 
-        config = (
-            "mintpy.load.processor      = hyp3\n"
-            f"mintpy.load.unwFile        = {data_dir}/*/*unw_phase.tif\n"
-            f"mintpy.load.corFile        = {data_dir}/*/*corr.tif\n"
-            f"mintpy.load.demFile        = {data_dir}/*/*dem.tif\n"
-            f"mintpy.load.incAngleFile   = {data_dir}/*/*lv_theta.tif\n"
-            f"mintpy.load.azAngleFile    = {data_dir}/*/*lv_phi.tif\n"
-            f"mintpy.load.waterMaskFile  = {data_dir}/*/*water_mask.tif\n"
+        config = "".join(
+            f"{key.ljust(26)} = {value}\n" for key, value in self.engine.load_options(data_dir, self.work_dir).items()
         )
 
         subset = _subset_lalo(geometry) if geometry else None
@@ -558,7 +562,10 @@ class MintPyAdapter:
 
         Run this after the `reference_point` step. It selects the pixel with the highest
         average coherence, smoothed over 3 x 3 pixels so one lucky pixel does not win,
-        among pixels that are valid in every interferogram and not on the border.
+        among pixels that are valid in every interferogram and not on the border. The
+        validity comes from `maskConnComp.h5` when MintPy made one (products with
+        connected components, such as bursts); otherwise (whole HyP3 scenes) the
+        coherence map itself, which is zero where there is no data.
         Returns {"previous": (row, column), "chosen": (row, column)}, or None when
         nothing was changed (the stack or the coherence maps are missing, or no
         candidate could be set).
@@ -566,14 +573,17 @@ class MintPyAdapter:
         stack = self.work_dir / "inputs" / "ifgramStack.h5"
         coh_file = self.work_dir / "avgSpatialCoh.h5"
         mask_file = self.work_dir / "maskConnComp.h5"
-        if not (stack.exists() and coh_file.exists() and mask_file.exists()):
+        if not (stack.exists() and coh_file.exists()):
             return None
         with h5py.File(stack, "r") as f:
             previous = (int(f.attrs["REF_Y"]), int(f.attrs["REF_X"]))
         with h5py.File(coh_file, "r") as f:
             coherence = np.nan_to_num(np.asarray(f["coherence"], dtype="float64"))
-        with h5py.File(mask_file, "r") as f:
-            valid = np.asarray(f["mask"], dtype=bool)
+        if mask_file.exists():
+            with h5py.File(mask_file, "r") as f:
+                valid = np.asarray(f["mask"], dtype=bool)
+        else:
+            valid = coherence > 0
         score = _smoothed_coherence(np.where(valid, coherence, 0.0))
         score[[0, -1], :] = -1.0
         score[:, [0, -1]] = -1.0

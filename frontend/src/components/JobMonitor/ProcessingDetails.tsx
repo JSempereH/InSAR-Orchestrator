@@ -81,6 +81,18 @@ export function ProcessingDetails({ projectId }: { projectId: string }) {
 
       {open && data && (
         <div style={{ marginTop: 6 }}>
+          {data.engine?.id === "nisar_gunw" && (
+            <Section title="NISAR interferograms">
+              <Row label="Source">NASA GUNW, L-band, downloaded as produced (no HyP3 processing)</Row>
+              {(data.nisar_granules ?? []).length === 0 && <div style={{ ...muted, fontSize: 12 }}>None downloaded yet.</div>}
+              {(data.nisar_granules ?? []).map((g) => (
+                <Row key={g.file_name} label={`${g.reference_date} to ${g.secondary_date}`}>
+                  <span style={mono}>{(g.size_bytes / 1e9).toFixed(2)} GB · {g.file_name}</span>
+                </Row>
+              ))}
+            </Section>
+          )}
+          {data.engine?.id !== "nisar_gunw" && (
           <Section title="HyP3 batches">
             {data.batches.length === 0 && <div style={{ ...muted, fontSize: 12 }}>No batches yet.</div>}
             {data.batches.map((b) => (
@@ -88,7 +100,9 @@ export function ProcessingDetails({ projectId }: { projectId: string }) {
                 {b.parameters ? (
                   <span style={mono}>
                     looks {String(b.parameters.hyp3.looks)} · DEM {b.parameters.hyp3.include_dem ? "yes" : "no"} ·
-                    {" "}{b.parameters.pairing.max_temporal_neighbors} temporal neighbors ·{" "}
+                    {" "}{b.parameters.pairing.method === "baseline_network"
+                      ? `pairs by baseline (limit ${b.parameters.pairing.pb_max ?? "none"} m, ${b.parameters.pairing.min_degree} to ${b.parameters.pairing.max_degree} per date)`
+                      : `${b.parameters.pairing.max_temporal_neighbors} temporal neighbors`} ·{" "}
                     {b.parameters.search.date_start} to {b.parameters.search.date_end} · {b.total_pairs} pairs
                   </span>
                 ) : (
@@ -97,6 +111,7 @@ export function ProcessingDetails({ projectId }: { projectId: string }) {
               </Row>
             ))}
           </Section>
+          )}
 
           <Section title="Last MintPy run">
             {!run && (

@@ -17,7 +17,7 @@ from app.schemas import (
     EGMSDownloadOut, EGMSDownloadRequest, EGMSProductOut, EGMSSearchRequest,
     MoveRequest, MoveStateOut, TimeSeriesOut,
 )
-from app.services import egms_download_queue, egms_points, egms_service, storage_move
+from app.services import egms_download_queue, egms_points, egms_service, safe_paths, storage_move
 from app.services.json_response import json_response
 from app.services.series_analysis import with_analysis
 
@@ -51,6 +51,11 @@ def search_products(body: EGMSSearchRequest, db: Session = Depends(get_db)):
 def start_download(body: EGMSDownloadRequest, db: Session = Depends(get_db)):
     destination = egms_download_queue.resolve_destination(body.storage_mountpoint, body.destination_name)
     products = [p.model_dump() for p in body.products]
+    try:
+        for p in products:
+            safe_paths.plain_file_name(p["filename"])
+    except safe_paths.UnsafeRequest as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     record = EGMSDownload(
         name=body.destination_name,
@@ -178,4 +183,4 @@ def get_point_time_series(download_id: str, point_id: str, db: Session = Depends
     series = egms_points.extract_time_series(Path(row.destination_path), row.filenames, point_id, geometry=row.geometry)
     if series is None:
         raise HTTPException(404, "Point not found in downloaded files")
-    return with_analysis(series)
+    return with_analysis(series, line_of_sight=True)

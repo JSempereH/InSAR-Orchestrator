@@ -10,6 +10,10 @@
 //   Viewer, EGMS          -> docs/images/viewer-egms.png     (needs an L2A/L2B download)
 //   Settings              -> docs/images/settings-credentials.png, settings-backup.png
 //   Processing details    -> docs/images/processing-details.png (needs a finished MintPy run)
+//   Check and export      -> docs/images/check-and-export.png (needs a finished MintPy run, best with a validation done)
+//   Pair planner          -> docs/images/pair-planner.png (needs a Sentinel-1 project; nothing is submitted)
+//   NISAR panel           -> docs/images/nisar-panel.png (needs a NISAR project)
+//   Vertical and east-west -> docs/images/vertical-east-west.png (needs a decomposition on the Combine page)
 //
 // A screenshot whose data is missing is skipped with a warning.
 import { chromium } from 'playwright-core';
@@ -211,6 +215,61 @@ export async function captureScreenshots() {
       done.push('processing-details.png');
       await page.close();
     } else skipped.push('processing-details.png (no project with a finished MintPy run)');
+
+    // 7. Quality checks, export and validation of the project with a finished MintPy run
+    if (found.mintpy) {
+      const page = await fresh(browser, 2200);
+      await page.getByText(found.mintpy.name).first().click();
+      await page.waitForTimeout(3000);
+      const card = page.locator('.card', { hasText: 'MintPy SBAS time series' }).last();
+      await card.scrollIntoViewIfNeeded();
+      const validate = card.locator('summary', { hasText: 'Validate against' });
+      if (!(await card.locator('details[open] summary', { hasText: 'Validate against' }).count())) await validate.click();
+      await page.waitForTimeout(1500);
+      await card.screenshot({ path: join(OUT, 'check-and-export.png') });
+      done.push('check-and-export.png');
+      await page.close();
+    } else skipped.push('check-and-export.png (no project with a finished MintPy run)');
+
+    // 8. The pair planner of a Sentinel-1 project (only looks: nothing is submitted)
+    const s1 = found.projects.find((p) => !p.engine || p.engine === 'hyp3_gamma');
+    if (s1) {
+      const page = await fresh(browser, 1100);
+      await page.getByText(s1.name).first().click();
+      await page.waitForTimeout(2500);
+      await page.getByRole('button', { name: /Submit new batch/ }).click();
+      await page.waitForTimeout(3000);
+      await page.locator('#pair-strategy').selectOption('baseline');
+      await page.waitForTimeout(5000);
+      await page.locator('[role=dialog] .card').screenshot({ path: join(OUT, 'pair-planner.png') });
+      done.push('pair-planner.png');
+      await page.close();
+    } else skipped.push('pair-planner.png (no Sentinel-1 project)');
+
+    // 9. The NISAR panel of a NISAR project
+    const nisar = found.projects.find((p) => p.engine === 'nisar_gunw');
+    if (nisar) {
+      const page = await fresh(browser, 1600);
+      await page.getByText(nisar.name).first().click();
+      await page.getByText('NISAR interferograms').first().waitFor({ timeout: 30_000 });
+      await page.waitForTimeout(6000);
+      await page.locator('.card', { hasText: 'NISAR interferograms' }).first().screenshot({ path: join(OUT, 'nisar-panel.png') });
+      done.push('nisar-panel.png');
+      await page.close();
+    } else skipped.push('nisar-panel.png (no NISAR project)');
+
+    // 10. The Combine page: vertical and east-west from an ascending and a descending project
+    const decompositions = await getJson('/api/decompositions').catch(() => []);
+    if (decompositions.length) {
+      const page = await fresh(browser, 2300);
+      await page.getByRole('button', { name: 'Combine' }).click();
+      await page.getByRole('button', { name: decompositions[0].name }).click();
+      await page.getByAltText('Vertical and east-west velocity maps').waitFor({ timeout: 60_000 });
+      await page.waitForTimeout(2500);
+      await page.locator('.page').screenshot({ path: join(OUT, 'vertical-east-west.png') });
+      done.push('vertical-east-west.png');
+      await page.close();
+    } else skipped.push('vertical-east-west.png (no decomposition yet)');
   } finally {
     await browser.close();
   }

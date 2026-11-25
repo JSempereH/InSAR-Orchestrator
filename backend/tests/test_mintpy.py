@@ -274,3 +274,112 @@ def test_mintpy_disk_usage_ignores_the_slc_folder(tmp_path):
     usage = mintpy_service._compute_disk_usage(tmp_path)
     assert usage["extracted_bytes"] == 10
     assert usage["total_bytes"] == 10
+
+
+# ── exporting the results ────────────────────────────────────────────────────
+
+def _write_exportable_results(storage_path: str):
+    _write_geocoded_timeseries(storage_path)
+    _write_geocoded_velocity(storage_path)
+    with h5py.File(Path(storage_path) / "mintpy" / "velocity.h5", "a") as f:
+        f.create_dataset("velocityStd", data=np.full((3, 3), 0.001, dtype="float32"))
+        f.attrs["FILE_PATH"] = "timeseries.h5"
+
+
+def test_export_for_unknown_project_returns_404(client):
+    assert client.get("/api/projects/does-not-exist/mintpy/export").status_code == 404
+
+
+def test_export_without_results_returns_422(client):
+    project = _create_project(client, name="Export with no results")
+    resp = client.get(f"/api/projects/{project['id']}/mintpy/export")
+    assert resp.status_code == 422 and "no MintPy results" in resp.json()["detail"]
+
+
+def test_export_downloads_a_geotiff_a_gis_can_open(client, tmp_path):
+    rasterio = pytest.importorskip("rasterio")
+    project = _create_project(client, name="Export geotiff")
+    _write_exportable_results(project["storage_path"])
+    resp = client.get(f"/api/projects/{project['id']}/mintpy/export", params={"format": "geotiff", "layer": "velocity"})
+    assert resp.status_code == 200 and resp.headers["content-type"] == "image/tiff"
+    assert 'filename="mintpy_velocity.tif"' in resp.headers["content-disposition"]
+    path = tmp_path / "got.tif"
+    path.write_bytes(resp.content)
+    with rasterio.open(path) as raster:
+        assert raster.crs.to_epsg() == 4326 and raster.read(1)[0, 0] == pytest.approx(2.0, abs=1e-3)
+
+
+def test_export_csv_downloads_a_table(client):
+    project = _create_project(client, name="Export csv")
+    _write_exportable_results(project["storage_path"])
+    resp = client.get(f"/api/projects/{project['id']}/mintpy/export", params={"format": "csv"})
+    assert resp.status_code == 200 and resp.headers["content-type"].startswith("text/csv")
+    body = [line for line in resp.text.splitlines() if not line.startswith("#")]
+    assert body[0].startswith("latitude,longitude,velocity_mm_yr") and len(body) == 1 + 8   # the NaN pixel is left out
+
+
+@pytest.mark.parametrize("params, message", [
+    ({"format": "shapefile"}, "format"),
+    ({"format": "geotiff", "layer": "nope"}, "layer"),
+])
+def test_export_refuses_a_bad_request(client, params, message):
+    project = _create_project(client, name="Export bad request")
+    _write_exportable_results(project["storage_path"])
+    resp = client.get(f"/api/projects/{project['id']}/mintpy/export", params=params)
+    assert resp.status_code == 422 and message in resp.json()["detail"]
+
+
+def test_the_same_export_is_not_repeated_until_mintpy_writes_new_results(client, monkeypatch):
+    import os
+    from insar_core.pipeline import mintpy_export
+
+    project = _create_project(client, name="Export cache")
+    _write_exportable_results(project["storage_path"])
+    calls = []
+    real = mintpy_export.export
+    monkeypatch.setattr(mintpy_export, "export", lambda *a, **k: calls.append(1) or real(*a, **k))
+    url = f"/api/projects/{project['id']}/mintpy/export"
+    client.get(url, params={"format": "csv"})
+    client.get(url, params={"format": "csv"})
+    assert len(calls) == 1
+    velocity = Path(project["storage_path"]) / "mintpy" / "velocity.h5"
+    later = velocity.stat().st_mtime + 10
+    os.utime(velocity, (later, later))
+    client.get(url, params={"format": "csv"})
+    assert len(calls) == 2
+
+
+def test_report_without_results_returns_422(client):
+    project = _create_project(client, name="Report with no results")
+    resp = client.get(f"/api/projects/{project['id']}/mintpy/report")
+    assert resp.status_code == 422 and "no MintPy results" in resp.json()["detail"]
+    assert client.get("/api/projects/does-not-exist/mintpy/report").status_code == 404
+
+
+def test_report_is_one_page_with_the_project_and_its_engine(client):
+    project = _create_project(client, name="Report <area>")
+    _write_exportable_results(project["storage_path"])
+    resp = client.get(f"/api/projects/{project['id']}/mintpy/report")
+    assert resp.status_code == 200 and resp.headers["content-type"].startswith("text/html")
+    assert "content-disposition" not in resp.headers                    # it opens in the browser
+    page = resp.text
+    assert "<h1>Report &lt;area&gt;</h1>" in page and "INSAR_GAMMA" in page
+    assert "has not been compared with independent data" in page and "Yunjun" in page
+    saved = client.get(f"/api/projects/{project['id']}/mintpy/report", params={"download": True})
+    assert saved.headers["content-disposition"].startswith("attachment") and saved.text.startswith("<!doctype html>")
+
+
+def test_report_leaves_out_a_validation_of_older_results(client):
+    import json
+    import os
+
+    project = _create_project(client, name="Report stale validation")
+    _write_exportable_results(project["storage_path"])
+    velocity = Path(project["storage_path"]) / "mintpy" / "velocity.h5"
+    record = {"source_name": "EGMS L2B", "verdict": {"status": "ok", "message": "Agrees with EGMS."},
+              "mintpy_results_mtime": velocity.stat().st_mtime, "computed_at": "2026-01-01T00:00:00+00:00"}
+    (velocity.parent / "validation_egms.json").write_text(json.dumps(record))
+    assert "Agrees with EGMS." in client.get(f"/api/projects/{project['id']}/mintpy/report").text
+    os.utime(velocity, (velocity.stat().st_mtime + 60, velocity.stat().st_mtime + 60))       # MintPy ran again
+    assert "Agrees with EGMS." not in client.get(f"/api/projects/{project['id']}/mintpy/report").text
+
